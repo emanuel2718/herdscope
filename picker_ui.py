@@ -27,6 +27,7 @@ HINTS = {"panes": (("↵", "go"), ("⇥", "scope"), (">", "commands"), ("^/", "p
          "commands": (("↵", "run"), ("⇥", "scope"), ("⌫", "back to panes"), ("esc", "quit")),
          "input": (("↵", "apply"), ("esc", "back"), ("^u", "clear"))}
 STATUS_WIDTH = len("working 11mo")
+PREVIEWS = 32  # Panes whose latest preview is kept, for flicking back to without a wait.
 
 
 class Palette:
@@ -136,7 +137,9 @@ class View:
         self.items = (None, [])
         self.key = None
         self.matched = []
+        self.tally = [0] * len(SCOPES)
         self.rows = []
+        self.cols = (None, [])
 
     def results(self, version, entries):
         """Rows for the current scope and query as (item, highlights), best first."""
@@ -150,6 +153,7 @@ class View:
                 # Rank every kind once, so each tab can count its matches.
                 self.matched = [(item, item.highlights(positions))
                                 for item, positions in fuzzy.rank(self.items[1], query, lambda i: i.text)]
+                self.tally = [sum(shows(kind, item.entry) for item, _ in self.matched) for kind in SCOPE_KINDS]
             kind = SCOPE_KINDS[self.scope]
             self.rows = [row for row in self.matched if shows(kind, row[0].entry)]
             self.key = key
@@ -175,7 +179,14 @@ class View:
 
     def counts(self):
         """Matches per tab: All, Agents, Terminals, Commands."""
-        return [sum(shows(kind, item.entry) for item, _ in self.matched) for kind in SCOPE_KINDS]
+        return self.tally
+
+    def columns(self, width):
+        """The tab's right-hand columns, measured once per inventory and width rather than every frame."""
+        key = (self.items[0], self.scope == COMMANDS, width)
+        if self.cols[0] != key:
+            self.cols = (key, (command_columns if self.scope == COMMANDS else columns)(self.items[1], width))
+        return self.cols[1]
 
     def ask(self, entry):
         """Turn the prompt into an input for `entry`, starting from its current value."""
@@ -245,8 +256,8 @@ class Previewer:
         self.condition = threading.Condition()
         self.target = None
         self.asked = 0
-        self.cache = {}
-        self.raw = {}
+        self.cache = {}  # The latest read of recently previewed panes, oldest first.
+        self.last = None  # (pane, output) as last read, so unchanged output isn't parsed again.
         self.stopped = False
         self.thread = threading.Thread(target=self.run, daemon=True)
 
@@ -296,15 +307,19 @@ class Previewer:
                 try:
                     text = self.read(entry, lines)
                     # Unchanged output costs no parsing and no redraw.
-                    unchanged = text == self.raw.get(entry["id"])
+                    unchanged = self.last == (entry["id"], text)
                     result = None if unchanged else (parse_ansi(text, self.base), None, lines)
-                    self.raw[entry["id"]] = text
+                    self.last = (entry["id"], text)
                 except Exception as error:  # noqa: BLE001 - a dead preview thread would stop every preview.
-                    self.raw.pop(entry["id"], None)
+                    self.last = None
                     result = ([], picker.clean(error) or "Preview unavailable", lines)
                 if result:
                     with self.condition:
+                        self.cache.pop(entry["id"], None)
                         self.cache[entry["id"]] = result
+                        if len(self.cache) > PREVIEWS:
+                            # Scrolling past hundreds of panes mustn't keep every one's output.
+                            del self.cache[next(iter(self.cache))]
                     self.changed()
             with self.condition:
                 if self.stopped:
@@ -712,7 +727,7 @@ def draw_results(p, view, rows, top, bottom, x, width, now, wall, selected_bg):
         elif selected_line > view.offset + visible - 1 - margin:
             view.offset = selected_line - visible + 1 + margin
     view.offset = max(0, min(view.offset, max(0, len(lines) - visible)))
-    cols = (command_columns if view.scope == COMMANDS else columns)(view.items[1], width - 1)
+    cols = view.columns(width - 1)
     backgrounds = ("sidebar_bg", selected_bg)
     for n, line in enumerate(lines[view.offset:view.offset + visible]):
         if line is not None:

@@ -70,9 +70,10 @@ class BackendTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        state = patch.object(picker, "STATE", Path(self.temp.name))
-        state.start()
-        self.addCleanup(state.stop)
+        for name, value in (("STATE", Path(self.temp.name)), ("SOCKET", f"{self.temp.name}/herdr.sock")):
+            patcher = patch.object(picker, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def test_attention_order_then_frecency_and_current_pane_sinks(self):
         items = picker.entries(snapshot())
@@ -106,31 +107,44 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(a["key"], moved["key"])
         self.assertEqual(len(picker.entries(data, {"id": "m", "label": "Box"})), 3, "remote terminals are omitted")
 
-    def test_event_envelope_records_manual_focus(self):
-        pane = snapshot()["panes"][0]
-        event = {"event": "pane_focused", "data": {"pane_id": "w1:p0"}}
-        with patch.dict(os.environ, {"HERDR_PLUGIN_EVENT_JSON": json.dumps(event)}), \
-                patch.object(picker, "rpc", return_value={"pane": pane}):
-            picker.record_event()
-        self.assertEqual(len(picker.history()), 1)
+    def test_focus_hook_records_the_visit_and_clears_out_closed_panes(self):
+        data, folder = snapshot(), picker.status_dir()
+        folder.mkdir(parents=True)
+        for name in ("w1:p0", "w9:p1"):  # A live agent's file and a closed one's
+            (folder / name).write_text("idle\n")
+        for pane_id in ("w1:p0", "w9:p1"):  # The second closed before its hook ran: nothing to record.
+            event = {"event": "pane_focused", "data": {"pane_id": pane_id}}
+            with patch.dict(os.environ, {"HERDR_PLUGIN_EVENT_JSON": json.dumps(event)}), \
+                    patch.object(picker, "rpc", return_value={"snapshot": data}):
+                picker.record_visit()
+        self.assertEqual(list(picker.history()), [picker.entry_key(["socket", picker.SOCKET], data["panes"][0])])
+        self.assertEqual(os.listdir(folder), ["w1:p0"])
 
     def test_status_hook_records_when_each_status_began(self):
-        pane = snapshot()["panes"][0]
-        key = picker.entry_key(["socket", picker.SOCKET], pane)
-        for status, now in (("working", 100), ("working", 160), ("blocked", 200)):
-            picker.record_status(key, status, now)
-            if status == "working":
-                self.assertEqual(picker.statuses()[key], ("working", 100), "repeats keep the first time")
-        self.assertEqual(picker.statuses()[key], ("blocked", 200))
-        event = {"event": "pane_agent_status_changed", "data": {"pane_id": "w1:p0", "agent_status": "done"}}
-        with patch.dict(os.environ, {"HERDR_PLUGIN_EVENT_JSON": json.dumps(event)}), \
-                patch.object(picker, "rpc", return_value={"pane": pane}):
-            picker.record_event()
-        self.assertEqual(picker.statuses()[key][0], "done")
+        items, path = picker.entries(snapshot()), picker.status_dir() / "w1:p0"
+        key = items[0]["key"]
+
+        def hook(status, pane="w1:p0", at=None):
+            # Herdr's compact JSON. A title can't pose as a field: its quotes are escaped.
+            event = json.dumps({"event": "pane_agent_status_changed", "data": {
+                "pane_id": pane, "title": 'say "agent_status":"done"', "agent_status": status}}, separators=(",", ":"))
+            subprocess.run(["sh", "status.sh"], check=True, cwd=Path(__file__).parent, env={
+                **os.environ, "HERDR_PLUGIN_STATE_DIR": str(picker.STATE), "HERDR_SOCKET_PATH": picker.SOCKET,
+                "HERDR_PLUGIN_EVENT_JSON": event})
+            if at:
+                os.utime(path, (at, at))
+
+        hook("working", at=100)
+        hook("working")
+        self.assertEqual(picker.statuses(items), {key: ("working", 100)}, "repeats keep the first time")
+        hook("blocked", at=200)
+        hook("done", pane="../w1:p0")  # Pane IDs name files, so odd ones are ignored.
+        hook("bogus")
+        self.assertEqual(picker.statuses(items), {key: ("blocked", 200)})
+        self.assertEqual(os.listdir(picker.status_dir()), ["w1:p0"])
         self.assertEqual(picker.history(), {}, "a status change is not a visit")
-        with patch.dict(os.environ, {"HERDR_PLUGIN_EVENT_JSON": json.dumps(event)}), \
-                patch.object(picker, "rpc", side_effect=RuntimeError("pane w1:p0 not found")):
-            picker.record_event()  # A pane that closed before its hook ran is skipped, not an error.
+        Path(picker.SOCKET).touch()  # Herdr restarted, so pane IDs may name other panes now.
+        self.assertEqual(picker.statuses(items), {})
 
     def test_time_in_state_comes_from_the_hook_or_what_the_picker_saw(self):
         items = picker.entries(snapshot())
@@ -168,11 +182,8 @@ class BackendTests(unittest.TestCase):
 
     def test_old_history_is_forgotten(self):
         picker.record("old", now=100)
-        picker.record_status("old", "idle", now=100)
         picker.record("new", now=100 + picker.FORGET + 1)
-        picker.record_status("new", "working", now=100 + picker.FORGET + 1)
         self.assertEqual(set(picker.history()), {"new"})
-        self.assertEqual(set(picker.statuses()), {"new"})
 
     def test_refresh_survives_unexpected_errors(self):
         replies = iter([{"snapshot": snapshot()}])
@@ -183,6 +194,7 @@ class BackendTests(unittest.TestCase):
             return reply
         with patch.object(picker, "rpc", rpc):
             inventory = picker.Inventory()
+            inventory.poke()
             worker = threading.Thread(target=inventory.refresh, daemon=True)
             worker.start()
             time.sleep(0.2)
@@ -191,6 +203,33 @@ class BackendTests(unittest.TestCase):
             worker.join(1)
         self.assertEqual(inventory.sources["local"][0]["kind"], "error", "an error row, not a dead thread")
         self.assertIn("odd reply", inventory.sources["local"][0]["error"])
+
+    def test_many_machines_share_a_few_connections(self):
+        machines = [{"id": f"m{i}", "label": f"Box {i}"} for i in range(40)]
+        running, peak, lock = 0, 0, threading.Lock()
+
+        def cli(args, stop=None, **kwargs):
+            nonlocal running, peak
+            if args[0] == "machine":
+                return machines
+            with lock:
+                running += 1
+                peak = max(peak, running)
+            time.sleep(0.01)
+            with lock:
+                running -= 1
+            return {"snapshot": snapshot()}
+
+        with patch.object(picker, "rpc", return_value={"snapshot": snapshot()}), patch.object(picker, "cli", cli):
+            with picker.Inventory() as inventory:
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and any(
+                        e["kind"] == "error" for e in inventory.current()[1] if e["machine_id"]):
+                    time.sleep(0.02)
+                loaded = {e["machine_id"] for e in inventory.current()[1] if e["kind"] == "agent"}
+        self.assertEqual(loaded, {None} | {m["id"] for m in machines})
+        self.assertLessEqual(peak, picker.MACHINE_WORKERS)
+        self.assertEqual(len(inventory.workers), 2 + picker.MACHINE_WORKERS, "not a thread per machine")
 
     def test_the_invoking_pane_is_where_the_popup_came_from(self):
         with patch.object(picker, "rpc", return_value={"snapshot": snapshot()}), \
@@ -328,6 +367,12 @@ class FuzzyTests(unittest.TestCase):
         score, positions = fuzzy.Query("rana vue").match(text)
         self.assertEqual("".join(text[i] for i in positions), "Vuerana")
         self.assertEqual(positions[:3], [text.index("Vue") + i for i in range(3)])
+
+    def test_case_folding_keeps_one_character_per_position(self):
+        for text in ("İstanbul", "ΟΔΟΣ ΣΟΦΙΑ", "Straße", "Ünïcödé"):
+            self.assertEqual(len(fuzzy.lower(text)), len(text), text)
+        self.assertEqual(fuzzy.Query("stanbul").match("İstanbul")[1], list(range(1, 8)))
+        self.assertEqual(fuzzy.normalize("Ünïcödé × Æ"), "Unicode × Æ")
 
     def test_extended_syntax_and_smart_case(self):
         match = lambda query, text: fuzzy.Query(query).match(text) is not None

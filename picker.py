@@ -7,6 +7,7 @@ Presentation lives in picker_ui, Herdr commands in commands.
 import json
 import math
 import os
+import queue
 import re
 import signal
 import socket
@@ -29,7 +30,12 @@ STATE = Path(os.environ.get("HERDR_PLUGIN_STATE_DIR") or Path(
 ORIGIN = os.environ.get("HERDSCOPE_PANE")
 ERRORS = (OSError, ValueError, KeyError, RuntimeError, sqlite3.Error)
 HALF_LIFE = 7 * 86400
-FORGET = 90 * 86400  # Visits and statuses older than this are dropped.
+FORGET = 90 * 86400  # Visits older than this are dropped.
+# Forwarded commands at once. Each is a herdr process and an SSH session, so hundreds of
+# machines must not mean hundreds of them, or threads, or open files.
+MACHINE_WORKERS = 16
+MACHINE_INTERVAL = 8
+MACHINE_RETRY = 30  # An unreachable machine holds a worker until it times out, so it waits longer.
 STATUS_ORDER = {"blocked": 0, "working": 1, "done": 2, "idle": 3, "unknown": 4}
 SECTION = {"agent": 0, "terminal": 1, "error": 2}
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)")
@@ -92,7 +98,6 @@ def database():
     try:
         with db:
             db.execute("CREATE TABLE IF NOT EXISTS visits (key TEXT PRIMARY KEY, weight REAL, last REAL)")
-            db.execute("CREATE TABLE IF NOT EXISTS statuses (key TEXT PRIMARY KEY, status TEXT, since REAL)")
             yield db
     finally:
         db.close()
@@ -122,21 +127,57 @@ def history():
         return {key: (decay(weight, last, now), last) for key, weight, last in db.execute("SELECT * FROM visits")}
 
 
-def record_status(key, status, now=None):
-    """Remember when an agent entered `status`; repeats of the same status keep the first time."""
-    now = time.time() if now is None else now
-    with database() as db:
-        db.execute("BEGIN IMMEDIATE")
-        old = db.execute("SELECT status FROM statuses WHERE key = ?", (key,)).fetchone()
-        if not old or old[0] != status:
-            db.execute("INSERT OR REPLACE INTO statuses VALUES (?, ?, ?)", (key, status, now))
-            db.execute("DELETE FROM statuses WHERE since < ?", (now - FORGET,))
+def status_dir():
+    """Where status.sh keeps a file per local pane: its agent's status, written when that began.
+
+    Plugin state is shared by every Herdr session, so the folder is named after this one's socket.
+    """
+    return STATE / "status" / SOCKET.lstrip("/")
 
 
-def statuses():
-    """{key: (status, since)} as recorded by the agent-status hook."""
-    with database() as db:
-        return {key: (status, since) for key, status, since in db.execute("SELECT * FROM statuses")}
+def started():
+    """When this Herdr server started, which is when it created its socket; 0 if unknown."""
+    try:
+        return os.stat(SOCKET).st_mtime
+    except OSError:
+        return 0
+
+
+def statuses(values):
+    """{key: (status, since)} for the local agents in `values`, as status.sh recorded them.
+
+    A file from before Herdr restarted is ignored: its pane ID may name another pane now.
+    """
+    folder, since_start, result = status_dir(), started(), {}
+    for entry in values:
+        if entry["kind"] == "agent":
+            try:
+                with open(folder / entry["pane_id"]) as file:
+                    status, since = file.read().strip(), os.fstat(file.fileno()).st_mtime
+            except OSError:
+                continue
+            if since >= since_start:
+                result[entry["key"]] = (status, since)
+    return result
+
+
+def prune(snapshot, before):
+    """Delete status files of panes that are gone or predate the server, written before `before`.
+
+    Agents come and go all day; without this the folder would gain a file for every one.
+    """
+    live, since_start = {pane["pane_id"] for pane in snapshot.get("panes", [])}, started()
+    try:
+        files = list(os.scandir(status_dir()))
+    except OSError:
+        return
+    for file in files:
+        try:
+            changed = file.stat().st_mtime
+            if (file.name not in live or changed < since_start) and changed < before:
+                os.unlink(file.path)
+        except OSError:
+            pass  # Already gone, e.g. pruned by a hook running alongside.
 
 
 def stamp(values, recorded, seen, now=None):
@@ -275,21 +316,21 @@ def read(entry, lines, stop=None):
                              "format": "ansi", "strip_ansi": False})["read"]["text"]
 
 
-def record_event():
-    """Hook for pane.focused (a visit) and pane.agent_status_changed (when a status began)."""
+def record_visit():
+    """Hook for pane.focused: count the visit, and tidy status.sh's files while here.
+
+    Focus changes come at a person's pace, unlike status changes, so this hook can afford
+    Python and a snapshot.
+    """
     event = json.loads(os.environ.get("HERDR_PLUGIN_EVENT_JSON", "{}"))
     payload = event.get("data", event)
     pane_id = payload.get("pane_id") or payload.get("pane", {}).get("pane_id")
-    if pane_id:
-        try:
-            pane = rpc("pane.get", {"pane_id": pane_id})["pane"]
-        except RuntimeError:
-            return  # The pane closed before the hook ran; there is nothing to record.
-        key = entry_key(["socket", SOCKET], pane)
-        if payload.get("agent_status"):
-            record_status(key, payload["agent_status"])
-        else:
-            record(key)
+    now = time.time()
+    snapshot = rpc("session.snapshot")["snapshot"]
+    pane = next((p for p in snapshot.get("panes", []) if p["pane_id"] == pane_id), None)
+    if pane:  # Otherwise it closed before the hook ran, and there is nothing to record.
+        record(entry_key(["socket", SOCKET], pane), now)
+    prune(snapshot, now)
 
 
 class Inventory:
@@ -305,14 +346,15 @@ class Inventory:
         self.cache = None
         self.changed = lambda: None
         self.scores = history()
-        self.since, self.seen = statuses(), {}
         self.snapshot = rpc("session.snapshot")["snapshot"]
 
         if ORIGIN in {pane["pane_id"] for pane in self.snapshot.get("panes", [])}:
             self.snapshot["focused_pane_id"] = ORIGIN  # The invoking client's pane, not another client's.
 
         self.origin = self.snapshot.get("focused_pane_id")
-        self.publish("local", stamp(entries(self.snapshot, origin=self.origin), self.since, self.seen))
+        values = entries(self.snapshot, origin=self.origin)
+        self.since, self.seen = statuses(values), {}
+        self.publish("local", stamp(values, self.since, self.seen))
 
     def publish(self, source, values):
         with self.lock:
@@ -335,41 +377,58 @@ class Inventory:
         """Refresh local panes now, e.g. right after closing one."""
         self.poked.set()
 
-    def refresh(self, machine=None):
-        while not self.stop.is_set():
+    def refresh(self):
+        """Local panes, every second or right after a poke. The first list came with the snapshot."""
+        while True:
+            self.poked.wait(1)
+            self.poked.clear()
+            if self.stop.is_set():
+                return
             try:
-                snapshot = (cli(["--machine", machine["id"], "api", "snapshot"], stop=self.stop)["snapshot"]
-                            if machine else rpc("session.snapshot")["snapshot"])
-                values = (entries(snapshot, machine) if machine else
-                          stamp(entries(snapshot, origin=self.origin), self.since, self.seen))
+                values = stamp(entries(rpc("session.snapshot")["snapshot"], origin=self.origin), self.since, self.seen)
             except Exception as error:  # noqa: BLE001 - a dead refresh thread would freeze the list silently.
-                values = [error_entry(machine.get("label", machine["id"]) if machine else "Local", str(error),
-                                      machine["id"] if machine else None)]
-            self.publish(machine["id"] if machine else "local", values)
-            if machine:
-                self.stop.wait(8)
-            else:
-                self.poked.wait(1)
-                self.poked.clear()
+                values = [error_entry("Local", str(error))]
+            self.publish("local", values)
 
     def discover(self):
         try:
-            for machine in cli(["machine", "list", "--json"], stop=self.stop):
-                if machine.get("enabled", True) and not self.stop.is_set():
-                    label = machine.get("label") or machine["id"]
-                    self.publish(machine["id"], [error_entry(label, "Connecting…", machine["id"], True)])
-                    worker = threading.Thread(target=self.refresh, args=({**machine, "label": label},), daemon=True)
-                    self.workers.append(worker)
-                    worker.start()
+            machines = [{**machine, "label": machine.get("label") or machine["id"]}
+                        for machine in cli(["machine", "list", "--json"], stop=self.stop)
+                        if machine.get("enabled", True)]
         except Exception as error:  # noqa: BLE001 - an odd machine list must not take the picker down.
             if not self.stop.is_set():
                 self.publish("discovery", [error_entry("Machines", str(error))])
+            return
+        # Machines take turns in a queue: each one refreshed goes to the back, due again a little
+        # later. With no more workers than machines, one is always waiting.
+        due = queue.SimpleQueue()
+        for machine in machines:
+            self.publish(machine["id"], [error_entry(machine["label"], "Connecting…", machine["id"], True)])
+            due.put((0, machine))
+        for _ in range(min(MACHINE_WORKERS, len(machines))):
+            self.start(self.poll, due)
+
+    def poll(self, due):
+        while True:
+            when, machine = due.get()
+            if self.stop.wait(max(0, when - time.monotonic())):
+                return
+            try:
+                snapshot = cli(["--machine", machine["id"], "api", "snapshot"], stop=self.stop)["snapshot"]
+                values, wait = entries(snapshot, machine), MACHINE_INTERVAL
+            except Exception as error:  # noqa: BLE001 - a dead worker would leave its machines stale silently.
+                values, wait = [error_entry(machine["label"], str(error), machine["id"])], MACHINE_RETRY
+            self.publish(machine["id"], values)
+            due.put((time.monotonic() + wait, machine))
+
+    def start(self, target, *args):
+        thread = threading.Thread(target=target, args=args, daemon=True)
+        self.workers.append(thread)
+        thread.start()
 
     def __enter__(self):
-        for target in (self.refresh, self.discover):
-            thread = threading.Thread(target=target, daemon=True)
-            self.workers.append(thread)
-            thread.start()
+        self.start(self.refresh)
+        self.start(self.discover)
         return self
 
     def __exit__(self, *exc):
@@ -396,8 +455,8 @@ def fail(message):
 
 def main():
     action = sys.argv[1] if len(sys.argv) > 1 else "ui"
-    if action == "record-event":
-        record_event()
+    if action == "record-visit":
+        record_visit()
     elif action == "list":
         scores = history()
         ranked = sorted(entries(rpc("session.snapshot")["snapshot"]), key=lambda e: rank(e, scores))

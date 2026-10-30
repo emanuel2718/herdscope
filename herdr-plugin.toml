@@ -20,8 +20,8 @@ command = ["python3", "picker.py", "ui"]
 
 [[events]]
 on = "pane.focused"
-command = ["python3", "picker.py", "record-event"]
+command = ["python3", "picker.py", "record-visit"]
 
 [[events]]
 on = "pane.agent_status_changed"
-command = ["python3", "picker.py", "record-event"]
+command = ["sh", "status.sh"]

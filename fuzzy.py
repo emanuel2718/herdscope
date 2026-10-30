@@ -12,7 +12,6 @@ term without accents ignores them ("cafe" finds "café"), while one with accents
 matches them.
 """
 
-from functools import lru_cache
 import unicodedata
 
 SCORE_MATCH = 16
@@ -59,22 +58,22 @@ def bonus_for(previous, current):
     return BONUS_BOUNDARY_WHITE if current == WHITE else 0
 
 
-@lru_cache(maxsize=4096)
-def plain(char):
-    """A Latin letter without its accent (é → e), as fzf normalizes; anything else unchanged."""
-    if "\u00c0" <= char <= "\u024f" or "\u1e00" <= char <= "\u1eff":
-        base = unicodedata.normalize("NFD", char)[0]
-        if base.isascii():
-            return base
-    return char
+# Latin letters without their accents (é → e), as fzf normalizes them. Every item is matched
+# on every key press, so this is one str.translate rather than a Python loop per character.
+UNACCENTED = {code: base for code in (*range(0xC0, 0x250), *range(0x1E00, 0x1F00))
+              if (base := unicodedata.normalize("NFD", chr(code))[0]).isascii() and base != chr(code)}
 
 
 def normalize(text):
-    return "".join(map(plain, text))
+    return text.translate(UNACCENTED)
 
 
 def lower(text):
-    # Keep one character per position so match indices stay valid in the original.
+    # Keep one character per position so match indices stay valid in the original. str.lower
+    # does that, except for "İ", which grows, and "Σ", which depends on its neighbors.
+    folded = text.lower()
+    if len(folded) == len(text) and "Σ" not in text:
+        return folded
     return "".join(c if len(c.lower()) != 1 else c.lower() for c in text)
 
 
