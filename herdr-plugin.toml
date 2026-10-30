@@ -1,0 +1,27 @@
+id = "emanuel2718.herdscope"
+name = "Herdscope"
+version = "0.1.0"
+min_herdr_version = "0.9.1"
+description = "A fuzzy finder for everything in Herdr, with live previews"
+platforms = ["macos", "linux"]
+
+[[actions]]
+id = "open"
+title = "Herdscope"
+command = ["sh", "open.sh"]
+
+[[panes]]
+id = "picker"
+title = "Herdscope"
+placement = "popup"
+width = "90%"
+height = "80%"
+command = ["python3", "picker.py", "ui"]
+
+[[events]]
+on = "pane.focused"
+command = ["python3", "picker.py", "record-event"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["python3", "picker.py", "record-event"]
