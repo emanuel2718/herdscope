@@ -142,15 +142,22 @@ class InventoryTests(StateTestCase):
                 data["panes"][0]["terminal_title_stripped"] = f"Step {calls['busy']}"
             return {"snapshot": data}
 
+        # Wait for enough rounds for the idle machine to reach the longest wait, then compare the
+        # waits the schedule holds: counting calls in a fixed time would depend on the runner's speed.
         with (
             patch.object(herdr, "rpc", return_value={"snapshot": snapshot()}),
             patch.object(herdr, "cli", cli),
             patch.object(inventory, "MACHINE_INTERVAL", 0.02),
             patch.object(inventory, "MACHINE_RATE", 1000),
         ):
-            with inventory.Inventory():
-                time.sleep(0.8)
-        self.assertGreater(calls["busy"], 2 * calls["idle"])
+            with inventory.Inventory() as panes:
+                deadline = time.monotonic() + 10
+                while time.monotonic() < deadline and min(calls.values()) < 4:
+                    time.sleep(0.01)
+            waits = {machine["id"]: wait for _, _, wait, machine in panes.schedule}
+        self.assertGreaterEqual(min(calls.values()), 4)
+        self.assertEqual(waits["busy"], 0.02, "a machine whose panes changed is asked again soon")
+        self.assertEqual(waits["idle"], 0.02 * inventory.MACHINE_BACKOFF, "one that didn't, less and less often")
 
     def test_missing_workspace_and_tab_numbers_still_sort(self):
         data = snapshot()
