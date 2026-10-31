@@ -12,6 +12,7 @@ term without accents ignores them ("cafe" finds "café"), while one with accents
 matches them.
 """
 
+from functools import lru_cache
 import unicodedata
 
 SCORE_MATCH = 16
@@ -56,6 +57,29 @@ def bonus_for(previous, current):
     if current in (NON_WORD, DELIMITER):
         return BONUS_NON_WORD
     return BONUS_BOUNDARY_WHITE if current == WHITE else 0
+
+
+class Classes(dict):
+    """Each character's class as a one-character string, for str.translate; filled as met."""
+
+    def __missing__(self, code):
+        self[code] = value = chr(char_class(chr(code)))
+        return value
+
+
+CLASSES = Classes()
+BONUS = {(previous, current): bonus_for(previous, current) for previous in range(7) for current in range(7)}
+
+
+@lru_cache(maxsize=1 << 15)
+def bonuses(text):
+    """The bonus for a match at each position of `text`, which depends on the text alone.
+
+    Worked out in C, by translating characters to classes and looking up each pair, and
+    kept as bytes, so caching one for every item costs a byte per character.
+    """
+    classes = text.translate(CLASSES).encode("latin-1")
+    return bytes(map(BONUS.__getitem__, zip(bytes([WHITE]) + classes, classes)))
 
 
 # Latin letters without their accents (é → e), as fzf normalizes them. Every item is matched
@@ -106,43 +130,58 @@ def score_range(text, folded, pattern, start, end):
 def fuzzy(text, folded, pattern):
     """fzf's FuzzyMatchV2: the highest-scoring alignment, not just the leftmost one."""
     m = len(pattern)
+    if m == 1:
+        # The first key press matches every item against one character: visit its occurrences,
+        # found in C, keeping the best bonus and stopping at the first word boundary.
+        best, best_at, at = -1, 0, folded.find(pattern)
+        while at >= 0:
+            bonus = bonus_for(char_class(text[at - 1]) if at else WHITE, char_class(text[at]))
+            if bonus > best:
+                best, best_at = bonus, at
+                if bonus >= BONUS_BOUNDARY:
+                    break
+            at = folded.find(pattern, at + 1)
+        return (SCORE_MATCH + best * BONUS_FIRST_CHAR_MULTIPLIER, [best_at]) if best >= 0 else None
+    # Most items don't match. Rule them out in C first: every pattern char, in order.
+    at = -1
+    for char in pattern:
+        at = folded.find(char, at + 1)
+        if at < 0:
+            return None
     # Limit the search to [char before the first pattern char, last occurrence of the last one].
     first = folded.find(pattern[0])
     last = folded.rfind(pattern[-1])
-    if first < 0 or last < 0:
-        return None
     low = max(0, first - 1)
     chars = folded[low:last + 1]
     n = len(chars)
+    # The bonus at `low` itself never counts: the first pattern char comes after it.
+    bonus_at = bonuses(text)[low:last + 1]
 
-    # Phase 2: per-position bonuses, first-row scores and the earliest match of each pattern char.
-    h0, c0, bonuses, firsts = [0] * n, [0] * n, [0] * n, []
-    best, best_at, previous_h, previous_class, in_gap, last_match = 0, 0, 0, WHITE, False, 0
+    # Phase 2: first-row scores and the earliest match of each pattern char. The loops below
+    # run per character of every candidate, so they avoid calls and repeated indexing.
+    h0, c0, firsts = [0] * n, [0] * n, []
+    best, best_at, value, in_gap, last_match = 0, 0, 0, False, 0
+    head, wanted, found = pattern[0], pattern[0], 0
     for at in range(n):
-        current = char_class(text[low + at])
-        bonus = bonuses[at] = bonus_for(previous_class, current)
-        previous_class = current
         char = chars[at]
-        if char == pattern[min(len(firsts), m - 1)]:
-            if len(firsts) < m:
+        if char == wanted:
+            if found < m:
                 firsts.append(at)
+                found += 1
+                wanted = pattern[min(found, m - 1)]
             last_match = at
-        if char == pattern[0]:
-            score = h0[at] = SCORE_MATCH + bonus * BONUS_FIRST_CHAR_MULTIPLIER
+        if char == head:
+            value = h0[at] = SCORE_MATCH + bonus_at[at] * BONUS_FIRST_CHAR_MULTIPLIER
             c0[at] = 1
-            if m == 1 and score > best:
-                best, best_at = score, at
-                if bonus >= BONUS_BOUNDARY:
-                    break
             in_gap = False
         else:
-            h0[at] = max(previous_h + (SCORE_GAP_EXTENSION if in_gap else SCORE_GAP_START), 0)
+            value += SCORE_GAP_EXTENSION if in_gap else SCORE_GAP_START
+            if value < 0:
+                value = 0
+            h0[at] = value
             in_gap = True
-        previous_h = h0[at]
-    if len(firsts) != m:
+    if found != m:
         return None
-    if m == 1:
-        return best, [low + best_at]
 
     # Phase 3: fill the score matrix row by row (one row per pattern character).
     f0 = firsts[0]
@@ -150,31 +189,38 @@ def fuzzy(text, folded, pattern):
     h = h0[f0:last_match + 1] + [0] * (width * (m - 1))
     c = c0[f0:last_match + 1] + [0] * (width * (m - 1))
     for index in range(1, m):
-        start, char, row, in_gap = firsts[index], pattern[index], index * width, False
-        h[row + start - f0 - 1] = 0
-        for column in range(start, last_match + 1):
-            j = column - f0
-            s1, s2, consecutive = 0, h[row + j - 1] + (SCORE_GAP_EXTENSION if in_gap else SCORE_GAP_START), 0
+        # h[here + column] is this row's cell, h[diagonal + column] the one up and to the left.
+        # Rows past the first start zeroed, so cells that don't match need no c write.
+        char, here, in_gap, left, last_row = pattern[index], index * width - f0, False, 0, index == m - 1
+        diagonal = here - width - 1
+        for column in range(firsts[index], last_match + 1):
+            s2 = left + (SCORE_GAP_EXTENSION if in_gap else SCORE_GAP_START)
             if chars[column] == char:
-                s1 = h[row - width + j - 1] + SCORE_MATCH
-                bonus = bonuses[column]
-                consecutive = c[row - width + j - 1] + 1
+                s1 = h[diagonal + column] + SCORE_MATCH
+                bonus = bonus_at[column]
+                consecutive = c[diagonal + column] + 1
                 if consecutive > 1:
-                    first_bonus = bonuses[column - consecutive + 1]
+                    first_bonus = bonus_at[column - consecutive + 1]
                     if bonus >= BONUS_BOUNDARY and bonus > first_bonus:
                         consecutive = 1  # Break the consecutive chunk at a stronger boundary.
                     else:
                         bonus = max(bonus, BONUS_CONSECUTIVE, first_bonus)
                 if s1 + bonus < s2:
-                    s1 += bonuses[column]
+                    s1 += bonus_at[column]
                     consecutive = 0
                 else:
                     s1 += bonus
-            c[row + j] = consecutive
-            in_gap = s1 < s2
-            score = h[row + j] = max(s1, s2, 0)
-            if index == m - 1 and score > best:
-                best, best_at = score, column
+                c[here + column] = consecutive
+                in_gap = s1 < s2
+                left = s1 if s1 > s2 else s2
+            else:
+                in_gap = s2 > 0
+                left = s2
+            if left < 0:
+                left = 0
+            h[here + column] = left
+            if last_row and left > best:
+                best, best_at = left, column
 
     # Phase 4: backtrace the positions of the best alignment.
     positions, index, column, prefer_match = [], m - 1, best_at, True
@@ -269,23 +315,46 @@ def parse(query):
     return sets
 
 
+def remember(seen, text, compute):
+    if text not in seen:
+        if len(seen) > 1 << 16:
+            seen.clear()  # Titles change for as long as the picker stays open.
+        seen[text] = compute()
+    return seen[text]
+
+
 class Query:
-    def __init__(self, text):
+    def __init__(self, text, previous=None):
+        """`previous`, the query before this one, lends what its terms matched."""
         self.text = text
         self.sets = parse(text)
+        # What each text matched, for the whole query and for each term. After a refresh only
+        # changed panes are matched again, and typing on reuses shared terms: "fix r" keeps "fix".
+        self.seen = {}
+        kept = previous.terms if previous else {}
+        self.terms = {term: kept.get(term, {}) for terms in self.sets for term in terms}
 
     def __bool__(self):
         return bool(self.sets)
 
     def match(self, text):
         """Return (score, sorted positions) or None, with fzf's extendedMatch semantics."""
-        normalized = normalize(text)
-        haystacks = (text, lower(text), normalized, lower(normalized))
+        return remember(self.seen, text, lambda: self.score(text))
+
+    def score(self, text):
+        haystacks = []
+
+        def run(term):
+            if not haystacks:
+                normalized = normalize(text)
+                haystacks.extend((text, lower(text), normalized, lower(normalized)))
+            return match_term(term, text, haystacks)
+
         total, positions = 0, set()
         for terms in self.sets:
             matched = False
             for term in terms:
-                result = match_term(term, text, haystacks)
+                result = remember(self.terms[term], text, lambda: run(term))
                 if result and not term[1]:
                     total += result[0]
                     positions.update(result[1])

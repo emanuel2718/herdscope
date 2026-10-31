@@ -135,39 +135,76 @@ class View:
         self.hits = {}
         self.page = 10
         self.items = (None, [])
+        self.totals = [0] * len(SCOPES)
+        self.loading = False
         self.key = None
+        self.compiled = fuzzy.Query("")
         self.matched = []
         self.tally = [0] * len(SCOPES)
         self.rows = []
+        self.lines = []
         self.cols = (None, [])
 
     def results(self, version, entries):
-        """Rows for the current scope and query as (item, highlights), best first."""
+        """Rows for the current scope and query as (item, highlights), best first.
+
+        This runs every frame, so it only works when the inventory, query or tab changed, and
+        then only on what changed: thousands of panes must not cost every frame or key press.
+        """
         if self.items[0] != version:
-            self.items = (version, [Item(e) for e in entries])
+            # A refresh rebuilds only the items of panes that changed.
+            old = {item.entry["id"]: item for item in self.items[1]}
+            self.items = (version, [item if (item := old.get(entry["id"])) and item.entry == entry else Item(entry)
+                                    for entry in entries])
+            self.totals = [sum(shows(kind, entry) for entry in entries) for kind in SCOPE_KINDS]
+            self.loading = any(entry.get("status") == "connecting" or entry.get("stale") for entry in entries)
         query = self.search
         key = (version, query, self.scope)
         if key != self.key:
             reset = not self.key or self.key[1:] != key[1:]
             if not self.key or self.key[:2] != key[:2]:
-                # Rank every kind once, so each tab can count its matches.
-                self.matched = [(item, item.highlights(positions))
-                                for item, positions in fuzzy.rank(self.items[1], query, lambda i: i.text)]
+                self.matched = self.match(version, query)
                 self.tally = [sum(shows(kind, item.entry) for item, _ in self.matched) for kind in SCOPE_KINDS]
             kind = SCOPE_KINDS[self.scope]
             self.rows = [row for row in self.matched if shows(kind, row[0].entry)]
+            self.lines = self.spaced()
             self.key = key
             if reset:
                 # Like fzf: a new query puts the cursor on the best match.
                 self.selected, self.index, self.offset = None, 0, 0
-        ids = {item.entry["id"]: i for i, (item, _) in enumerate(self.rows)}
-        # Live refreshes keep the selected destination; if it vanished, keep its position.
-        before = self.selected
-        self.index = ids.get(self.selected, min(self.index, max(0, len(self.rows) - 1)))
-        self.selected = self.rows[self.index][0].entry["id"] if self.rows else None
-        if self.selected != before:
-            self.preview_scroll = 0  # A different pane's preview starts at its newest output.
+        if self.index >= len(self.rows) or self.rows[self.index][0].entry["id"] != self.selected:
+            ids = {item.entry["id"]: i for i, (item, _) in enumerate(self.rows)}
+            # Live refreshes keep the selected destination; if it vanished, keep its position.
+            before = self.selected
+            self.index = ids.get(self.selected, min(self.index, max(0, len(self.rows) - 1)))
+            self.selected = self.rows[self.index][0].entry["id"] if self.rows else None
+            if self.selected != before:
+                self.preview_scroll = 0  # A different pane's preview starts at its newest output.
         return self.rows
+
+    def match(self, version, query):
+        """Every kind's matches, ranked once so each tab can count its own."""
+        candidates = self.items[1]
+        before = self.key[1] if self.key and self.key[0] == version else ""
+        if before and query.startswith(before) and not any(char in query for char in "!|\\$'"):
+            # Typing on can only narrow plain terms' matches, so only those need checking, as in fzf.
+            kept = {id(item) for item, _ in self.matched}
+            candidates = [item for item in candidates if id(item) in kept]
+        if self.compiled.text != query:
+            self.compiled = fuzzy.Query(query, self.compiled)
+        return [(item, item.highlights(positions))
+                for item, positions in fuzzy.rank(candidates, self.compiled, lambda i: i.text)]
+
+    def spaced(self):
+        """Row indexes to draw, with None for a blank line between kinds while browsing everything."""
+        lines, previous = [], None
+        for i, (item, _) in enumerate(self.rows):
+            group = item.entry.get("category") or item.entry["kind"]
+            if not self.search and self.scope in (0, COMMANDS) and previous and group != previous:
+                lines.append(None)
+            previous = group
+            lines.append(i)
+        return lines
 
     def current(self):
         return self.rows[self.index][0] if self.rows else None
@@ -431,7 +468,9 @@ def draw_row(p, y, x, width, item, hl, selected, cols, now, wall, backgrounds):
             status = entry.get("status")
             if status not in STATUS_ROLE or status == "unknown":
                 continue
-            p.text(y, at, status, STATUS_ROLE[status], bg, size, hl=hl.get("status"))
+            # A machine's panes as last seen, until it answers, have their status dimmed.
+            role = faint if entry.get("stale") else STATUS_ROLE[status]
+            p.text(y, at, status, role, bg, size, hl=hl.get("status"))
             if entry.get("since"):
                 held = duration(max(0, wall - entry["since"]))
                 p.text(y, at + size - text_width(held), held, faint, bg)
@@ -589,6 +628,7 @@ def draw_preview(p, view, item, hl, area, previewer, now, inset):
         # Local previews land within milliseconds; only a slow one gets a loading line.
         if previewer.waiting() > 0.15:
             p.text(body, x, f"{SPINNER[int(now * 10) % 10]} loading preview…", "overlay0")
+        view.hits["animated"] = True
         return
     lines, error, depth = cached
     if error:
@@ -710,13 +750,7 @@ def draw_tabs(p, view, y, x, width, total):
 
 def draw_results(p, view, rows, top, bottom, x, width, now, wall, selected_bg):
     """One line per result, a blank line between kinds while browsing everything, and a scrollbar."""
-    lines, previous = [], None
-    for i, (item, _) in enumerate(rows):
-        group = item.entry.get("category") or item.entry["kind"]
-        if not view.search and view.scope in (0, COMMANDS) and previous and group != previous:
-            lines.append(None)
-        previous = group
-        lines.append(i)
+    lines = view.lines
     visible = max(1, bottom - top)
     view.page = max(1, visible - 1)
     if rows:
@@ -776,8 +810,7 @@ def draw(canvas, palette, view, entries, rows, now, previewer, loading=False, wa
     prompt_y = ly + roomy
     tabs_y = prompt_y + 1 + roomy
     hints_y = ly + lh - 1
-    kind = SCOPE_KINDS[view.scope]
-    counter = f"{len(rows)}/{sum(shows(kind, e) for e in entries)}"
+    counter = f"{len(rows)}/{view.totals[view.scope]}"
     if loading:
         counter = f"{SPINNER[int(now * 10) % 10]} {counter}"
     draw_prompt(p, view, prompt_y, lx, lw, counter)
@@ -785,6 +818,9 @@ def draw(canvas, palette, view, entries, rows, now, previewer, loading=False, wa
     draw_results(p, view, rows, tabs_y + 2 + roomy, hints_y - roomy, lx, lw, now,
                  time.time() if wall is None else wall, "panel_bg" if lifted else "selection_bg")
     footer(p, view, hints_y, lx, lw, "sidebar_bg")
+    # Spinners are all that moves by itself, so the loop wakes at their pace only while one shows.
+    view.hits["animated"] = loading or any(rows[line][0].entry.get("status") in ("working", "connecting")
+                                           for line in view.hits["rows"].values())
     previewing = False
     if preview_area:
         view.hits["preview"] = preview_area
@@ -949,13 +985,11 @@ def loop(inventory, screen, palette, view, previewer, catalog):
         rows = view.results(version, entries)
         if view.confirm and not view.find(view.confirm):
             view.confirm = None  # What was asked about is gone: nothing left to confirm.
-        loading = any(e.get("status") == "connecting" for e in entries)
-        draw(screen, palette, view, entries, rows, now, previewer, loading)
+        draw(screen, palette, view, entries, rows, now, previewer, view.loading)
         screen.refresh()
-        animated = loading or any(e.get("status") == "working" for e in entries)
         try:
             # Spinners advance every 0.1 s: wake for the next frame, not sooner.
-            event = screen.event(0.1 - now % 0.1 + 0.002 if animated else 0.25)
+            event = screen.event(0.1 - now % 0.1 + 0.002 if view.hits.get("animated") else 0.25)
         except EOFError:
             return
         if not event:

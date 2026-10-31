@@ -79,11 +79,17 @@ Closing asks for `y` first and lists what will stop.
 
 ## Machines
 
-Panes on the machines in `herdr machine list` appear after local ones. They refresh every
-eight seconds, and slow or offline machines never hold up local panes. You can preview and
-focus remote agents, but not remote terminals, and remote panes can't be closed from here.
-Herdr has no way for a plugin to switch the machine on screen, so after you focus a remote
-agent, Herdscope tells you which machine to pick in the sidebar.
+Agents on the machines in `herdr machine list` appear after local panes. Slow or offline
+machines never hold up local panes. Until a machine answers, its agents show as Herdscope
+last saw them, with their status dimmed.
+
+Each machine refreshes every eight seconds. Machines whose agents haven't changed are asked
+less often. With more than 80 machines, refreshes spread out to keep Herdscope to about ten
+requests a second in total.
+
+You can preview and focus remote agents, but not remote terminals, and remote panes can't be
+closed from here. Herdr has no way for a plugin to switch the machine on screen, so after you
+focus a remote agent, Herdscope tells you which machine to pick in the sidebar.
 
 ## Colors
 
@@ -102,9 +108,17 @@ With the popup closed, Herdscope runs only two small event hooks:
 - **Pane focus:** a short Python script that counts the visit for ranking. It runs as often as
   you switch panes.
 
-With the popup open, it polls local panes once a second over Herdr's socket. It reads only
-the selected pane's output, and polls machines every eight seconds, at most 16 at a time.
-With 1,000 panes, a keystroke re-ranks everything in about 7 ms.
+With the popup open:
+
+- **Local panes** refresh once a second over Herdr's socket. Only panes that changed are
+  re-matched, and with thousands of panes the refresh slows down to stay under 5% of a core.
+- **Previews** read only the selected pane's output.
+- **Machines** are asked at most 16 at a time. After the first round, that's about ten
+  requests a second at most.
+- **Spinners** only cause redraws while one is on screen.
+
+With 1,000 panes, a keystroke takes about 2.5 ms; with 10,000, about 30 ms. With 300 agents,
+the open popup uses about 2–4% of one core.
 
 ## Development
 

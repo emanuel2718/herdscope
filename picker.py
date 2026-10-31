@@ -4,10 +4,13 @@
 Presentation lives in picker_ui, Herdr commands in commands.
 """
 
+import heapq
 import json
+import json.encoder
 import math
+import operator
 import os
-import queue
+import random
 import re
 import signal
 import socket
@@ -35,14 +38,24 @@ FORGET = 90 * 86400  # Visits older than this are dropped.
 # machines must not mean hundreds of them, or threads, or open files.
 MACHINE_WORKERS = 16
 MACHINE_INTERVAL = 8
-MACHINE_RETRY = 30  # An unreachable machine holds a worker until it times out, so it waits longer.
+# Forwarded commands a second at most, once every machine has loaded. Each costs about 10 ms of
+# CPU here, so past MACHINE_RATE * MACHINE_INTERVAL machines, each is refreshed less often.
+MACHINE_RATE = 10
+# A machine whose panes didn't change waits twice as long next time, up to this many intervals,
+# as does one that can't be reached, which holds a worker until it times out.
+MACHINE_BACKOFF = 4
+MACHINE_CACHE_AGE = 86400  # Last time's panes show while a machine loads, if no older than this.
+PRUNE_EVERY = 600  # Seconds between clear-outs of status.sh's files, which need every pane.
 STATUS_ORDER = {"blocked": 0, "working": 1, "done": 2, "idle": 3, "unknown": 4}
 SECTION = {"agent": 0, "terminal": 1, "error": 2}
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)")
 
 
 def clean(value):
-    return " ".join("".join(c for c in ANSI.sub("", str(value or "")) if c.isprintable() or c.isspace()).split())
+    text = str(value or "")
+    if not text.isprintable():  # Rare, so most labels skip the per-character pass.
+        text = "".join(c for c in ANSI.sub("", text) if c.isprintable() or c.isspace())
+    return " ".join(text.split())
 
 
 def rpc(method, params=None):
@@ -151,14 +164,32 @@ def statuses(values):
     folder, since_start, result = status_dir(), started(), {}
     for entry in values:
         if entry["kind"] == "agent":
-            try:
-                with open(folder / entry["pane_id"]) as file:
-                    status, since = file.read().strip(), os.fstat(file.fileno()).st_mtime
-            except OSError:
+            try:  # Plain system calls: this runs for every agent.
+                fd = os.open(folder / entry["pane_id"], os.O_RDONLY)
+                try:
+                    status, since = os.read(fd, 64).decode().strip(), os.fstat(fd).st_mtime
+                finally:
+                    os.close(fd)
+            except (OSError, UnicodeError):
                 continue
             if since >= since_start:
                 result[entry["key"]] = (status, since)
     return result
+
+
+def load_machines():
+    """{machine: {"at": when, "entries": panes}} as the picker last saw them."""
+    try:
+        return json.loads((STATE / "machines.json").read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def save_machines(machines):
+    STATE.mkdir(parents=True, exist_ok=True)
+    temporary = STATE / f"machines.json.{os.getpid()}"
+    temporary.write_text(json.dumps(machines, separators=(",", ":")))
+    os.replace(temporary, STATE / "machines.json")  # Another picker may be reading it.
 
 
 def prune(snapshot, before):
@@ -224,13 +255,16 @@ def labels(entry):
 
 
 def entry_key(scope, pane):
-    # Terminal IDs survive pane moves; machine/session namespaces prevent cross-server collisions.
-    return json.dumps([scope, pane.get("terminal_id") or pane["pane_id"]], separators=(",", ":"))
+    """JSON for [scope, terminal]: terminal IDs survive pane moves, and the machine or session
+    keeps two servers' IDs apart. `scope` may come already as JSON, done once per snapshot."""
+    scope = scope if isinstance(scope, str) else json.dumps(scope, separators=(",", ":"))
+    return f"[{scope},{json.encoder.encode_basestring_ascii(pane.get('terminal_id') or pane['pane_id'])}]"
 
 
 def entries(snapshot, machine=None, origin=None):
     machine_id = machine["id"] if machine else None
-    scope = ["machine", machine_id, machine.get("session", "default")] if machine else ["socket", SOCKET]
+    scope = json.dumps(["machine", machine_id, machine.get("session", "default")] if machine else ["socket", SOCKET],
+                       separators=(",", ":"))
     workspaces = {w["workspace_id"]: w for w in snapshot.get("workspaces", [])}
     tabs = {t["tab_id"]: t for t in snapshot.get("tabs", [])}
     agents = {a["pane_id"]: a for a in snapshot.get("agents", [])}
@@ -317,20 +351,28 @@ def read(entry, lines, stop=None):
 
 
 def record_visit():
-    """Hook for pane.focused: count the visit, and tidy status.sh's files while here.
+    """Hook for pane.focused: count the visit, and now and then tidy status.sh's files.
 
     Focus changes come at a person's pace, unlike status changes, so this hook can afford
-    Python and a snapshot.
+    Python. Tidying needs a snapshot of every pane, so it waits PRUNE_EVERY between runs.
     """
     event = json.loads(os.environ.get("HERDR_PLUGIN_EVENT_JSON", "{}"))
     payload = event.get("data", event)
     pane_id = payload.get("pane_id") or payload.get("pane", {}).get("pane_id")
     now = time.time()
-    snapshot = rpc("session.snapshot")["snapshot"]
-    pane = next((p for p in snapshot.get("panes", []) if p["pane_id"] == pane_id), None)
-    if pane:  # Otherwise it closed before the hook ran, and there is nothing to record.
-        record(entry_key(["socket", SOCKET], pane), now)
-    prune(snapshot, now)
+    if pane_id:
+        try:
+            record(entry_key(["socket", SOCKET], rpc("pane.get", {"pane_id": pane_id})["pane"]), now)
+        except RuntimeError:
+            pass  # The pane closed before the hook ran; there is nothing to record.
+    marker = Path(f"{status_dir()}.pruned")
+    try:
+        if now - marker.stat().st_mtime < PRUNE_EVERY:
+            return
+    except OSError:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
+    prune(rpc("session.snapshot")["snapshot"], now)
 
 
 class Inventory:
@@ -340,6 +382,9 @@ class Inventory:
         self.stop = threading.Event()
         self.poked = threading.Event()
         self.lock = threading.Lock()
+        self.due = threading.Condition()  # Guards the machines' schedule.
+        self.schedule = []
+        self.machines = {}  # Each machine's latest panes, kept for the next time the picker opens.
         self.sources = {}
         self.workers = []
         self.version = 0
@@ -352,15 +397,17 @@ class Inventory:
             self.snapshot["focused_pane_id"] = ORIGIN  # The invoking client's pane, not another client's.
 
         self.origin = self.snapshot.get("focused_pane_id")
-        values = entries(self.snapshot, origin=self.origin)
-        self.since, self.seen = statuses(values), {}
-        self.publish("local", stamp(values, self.since, self.seen))
+        self.since, self.seen = {}, {}  # Status times follow the first frame; see refresh.
+        self.publish("local", stamp(entries(self.snapshot, origin=self.origin), self.since, self.seen))
 
     def publish(self, source, values):
+        # Each entry's rank is worked out once, here, so sorting thousands of them after every
+        # change compares ready-made keys.
+        ranked = [(rank(entry, self.scores), entry) for entry in values]
         with self.lock:
-            if self.sources.get(source) == values:
+            if self.sources.get(source) == ranked:
                 return
-            self.sources[source] = values
+            self.sources[source] = ranked
             self.version += 1
         self.changed()
 
@@ -368,9 +415,9 @@ class Inventory:
         """(version, entries in rank order); the version changes only when data does."""
         with self.lock:
             if not self.cache or self.cache[0] != self.version:
-                ordered = sorted((e for group in self.sources.values() for e in group),
-                                 key=lambda e: rank(e, self.scores))
-                self.cache = (self.version, ordered)
+                ranked = sorted((pair for group in self.sources.values() for pair in group),
+                                key=operator.itemgetter(0))
+                self.cache = (self.version, [entry for _, entry in ranked])
             return self.cache
 
     def poke(self):
@@ -378,17 +425,31 @@ class Inventory:
         self.poked.set()
 
     def refresh(self):
-        """Local panes, every second or right after a poke. The first list came with the snapshot."""
+        """Local panes, every second or right after a poke.
+
+        The first list came with the snapshot. Its status times come next: they are a file
+        per agent, which takes a while with thousands, so they follow the first frame rather
+        than hold it up. With thousands of panes a refresh takes a while too, so the pause
+        stretches to keep refreshing under a twentieth of a core.
+        """
+        try:
+            self.since.update(statuses(entries(self.snapshot)))
+            self.publish("local", stamp(entries(self.snapshot, origin=self.origin), self.since, self.seen))
+        except Exception:  # noqa: BLE001 - durations are a nicety; the list stands without them.
+            pass
+        pause = 1
         while True:
-            self.poked.wait(1)
+            self.poked.wait(pause)
             self.poked.clear()
             if self.stop.is_set():
                 return
+            began = time.monotonic()
             try:
                 values = stamp(entries(rpc("session.snapshot")["snapshot"], origin=self.origin), self.since, self.seen)
             except Exception as error:  # noqa: BLE001 - a dead refresh thread would freeze the list silently.
                 values = [error_entry("Local", str(error))]
             self.publish("local", values)
+            pause = max(1, 20 * (time.monotonic() - began))
 
     def discover(self):
         try:
@@ -399,27 +460,49 @@ class Inventory:
             if not self.stop.is_set():
                 self.publish("discovery", [error_entry("Machines", str(error))])
             return
-        # Machines take turns in a queue: each one refreshed goes to the back, due again a little
-        # later. With no more workers than machines, one is always waiting.
-        due = queue.SimpleQueue()
+        # Until a machine answers, show its panes as the picker last saw them, dimmed, so hundreds
+        # of machines appear at once. Their status times carry over while the status holds.
+        cached, now = load_machines(), time.time()
         for machine in machines:
-            self.publish(machine["id"], [error_entry(machine["label"], "Connecting…", machine["id"], True)])
-            due.put((0, machine))
+            last = cached.get(machine["id"])
+            if last and now - last["at"] < MACHINE_CACHE_AGE:
+                self.machines[machine["id"]] = last
+                for entry in last["entries"]:
+                    if entry.get("since"):
+                        self.since[entry["key"]] = (entry["status"], entry["since"])
+                self.publish(machine["id"], [{**entry, "stale": True} for entry in last["entries"]])
+            else:
+                self.publish(machine["id"], [error_entry(machine["label"], "Connecting…", machine["id"], True)])
+        interval = max(MACHINE_INTERVAL, len(machines) / MACHINE_RATE)
+        with self.due:
+            self.schedule = [(0, order, interval, machine) for order, machine in enumerate(machines)]
         for _ in range(min(MACHINE_WORKERS, len(machines))):
-            self.start(self.poll, due)
+            self.start(self.poll, interval)
 
-    def poll(self, due):
+    def poll(self, interval):
+        """Refresh machines as they fall due, earliest first, backing off those that are idle."""
         while True:
-            when, machine = due.get()
-            if self.stop.wait(max(0, when - time.monotonic())):
-                return
+            with self.due:
+                while not self.stop.is_set() and (not self.schedule or self.schedule[0][0] > time.monotonic()):
+                    self.due.wait(self.schedule[0][0] - time.monotonic() if self.schedule else None)
+                if self.stop.is_set():
+                    return
+                _, order, wait, machine = heapq.heappop(self.schedule)
             try:
                 snapshot = cli(["--machine", machine["id"], "api", "snapshot"], stop=self.stop)["snapshot"]
-                values, wait = entries(snapshot, machine), MACHINE_INTERVAL
+                values = stamp(entries(snapshot, machine), self.since, self.seen)
+                last = self.machines.get(machine["id"], {}).get("entries")
+                wait = min(wait * 2, interval * MACHINE_BACKOFF) if values == last else interval
+                self.machines[machine["id"]] = {"at": time.time(), "entries": values}
             except Exception as error:  # noqa: BLE001 - a dead worker would leave its machines stale silently.
-                values, wait = [error_entry(machine["label"], str(error), machine["id"])], MACHINE_RETRY
+                values, wait = [error_entry(machine["label"], str(error), machine["id"])], interval * MACHINE_BACKOFF
             self.publish(machine["id"], values)
-            due.put((time.monotonic() + wait, machine))
+            with self.due:
+                # A little jitter, so machines first asked together drift apart instead of
+                # falling due together every round.
+                when = time.monotonic() + wait * random.uniform(0.75, 1.25)
+                heapq.heappush(self.schedule, (when, order, wait, machine))
+                self.due.notify()
 
     def start(self, target, *args):
         thread = threading.Thread(target=target, args=args, daemon=True)
@@ -434,8 +517,15 @@ class Inventory:
     def __exit__(self, *exc):
         self.stop.set()
         self.poked.set()
+        with self.due:
+            self.due.notify_all()
         for worker in list(self.workers):
             worker.join(timeout=1)
+        if self.machines:
+            try:
+                save_machines(self.machines)
+            except OSError:
+                pass  # Next time, machines show "Connecting…" until they answer, as on the first.
 
 
 def picker():

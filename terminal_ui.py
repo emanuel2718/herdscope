@@ -52,7 +52,7 @@ def char_width(char):
 
 
 def text_width(text):
-    return sum(map(char_width, text))
+    return len(text) if text.isascii() else sum(map(char_width, text))  # ASCII is one cell a char.
 
 
 def clip(text, width, ellipsis="…"):
@@ -60,6 +60,8 @@ def clip(text, width, ellipsis="…"):
         return ""
     if text_width(text) <= width:
         return text
+    if text.isascii():
+        return text[:width - len(ellipsis)] + ellipsis
     result, used = [], 0
     for char in text:
         size = char_width(char)
@@ -68,6 +70,20 @@ def clip(text, width, ellipsis="…"):
         result.append(char)
         used += size
     return "".join(result) + ellipsis
+
+
+def first_difference(a, b):
+    """Where equal-length rows `a` and `b` first differ, given they do: a binary search whose
+    steps compare slices in C, so a one-cell change in a long row costs a few steps, not one
+    per cell."""
+    low, high = 0, len(a) - 1
+    while low < high:
+        middle = (low + high) // 2
+        if a[low:middle + 1] == b[low:middle + 1]:
+            low = middle + 1
+        else:
+            high = middle
+    return low
 
 
 class Canvas:
@@ -91,6 +107,17 @@ class Canvas:
             return x
         right = self.width if limit is None else min(self.width, x + limit)
         row = self.cells[y]
+        if x >= 0 and text.isascii():
+            # Most text: a cell per character, written as one slice. Only the ends can split
+            # a wide glyph, so only they need fixing.
+            end = max(x, min(x + len(text), right))
+            if end > x:
+                if row[x][0] == "" and x > 0:
+                    row[x - 1] = (" ", row[x - 1][1])
+                row[x:end] = [(char, style) for char in text[:end - x]]
+                if end < self.width and row[end][0] == "":
+                    row[end] = (" ", row[end][1])
+            return end
         for char in text:
             size = char_width(char)
             if size == 0:
@@ -115,8 +142,9 @@ class Canvas:
 
     def fill(self, y, x, width, style, char=" "):
         if 0 <= y < self.height:
-            for column in range(max(0, x), min(self.width, x + width)):
-                self.cells[y][column] = (char, style)
+            start, end = max(0, x), min(self.width, x + width)
+            if start < end:
+                self.cells[y][start:end] = [(char, style)] * (end - start)
 
     def text(self):
         return "\n".join("".join(char for char, _ in row) for row in self.cells)
@@ -401,10 +429,8 @@ class Terminal(Canvas):
             start, end = 0, len(row)
             if old and len(old) == len(row):
                 # Rewrite only the changed span (a spinner is one cell), never splitting a wide glyph.
-                while old[start] == row[start]:
-                    start += 1
-                while old[end - 1] == row[end - 1]:
-                    end -= 1
+                start = first_difference(old, row)
+                end = len(row) - first_difference(old[::-1], row[::-1])
                 while start and not row[start][0]:
                     start -= 1
                 while end < len(row) and not row[end][0]:

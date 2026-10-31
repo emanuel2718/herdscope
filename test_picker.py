@@ -112,13 +112,24 @@ class BackendTests(unittest.TestCase):
         folder.mkdir(parents=True)
         for name in ("w1:p0", "w9:p1"):  # A live agent's file and a closed one's
             (folder / name).write_text("idle\n")
+        panes = {pane["pane_id"]: pane for pane in data["panes"]}
+
+        def rpc(method, params=None):
+            if method == "session.snapshot":
+                return {"snapshot": data}
+            if params["pane_id"] not in panes:
+                raise RuntimeError(f"pane {params['pane_id']} not found")
+            return {"pane": panes[params["pane_id"]]}
+
         for pane_id in ("w1:p0", "w9:p1"):  # The second closed before its hook ran: nothing to record.
             event = {"event": "pane_focused", "data": {"pane_id": pane_id}}
             with patch.dict(os.environ, {"HERDR_PLUGIN_EVENT_JSON": json.dumps(event)}), \
-                    patch.object(picker, "rpc", return_value={"snapshot": data}):
+                    patch.object(picker, "rpc", side_effect=rpc) as calls:
                 picker.record_visit()
         self.assertEqual(list(picker.history()), [picker.entry_key(["socket", picker.SOCKET], data["panes"][0])])
         self.assertEqual(os.listdir(folder), ["w1:p0"])
+        self.assertNotIn("session.snapshot", [c.args[0] for c in calls.call_args_list],
+                         "tidying waits PRUNE_EVERY between runs")
 
     def test_status_hook_records_when_each_status_began(self):
         items, path = picker.entries(snapshot()), picker.status_dir() / "w1:p0"
@@ -201,8 +212,8 @@ class BackendTests(unittest.TestCase):
             inventory.stop.set()
             inventory.poked.set()
             worker.join(1)
-        self.assertEqual(inventory.sources["local"][0]["kind"], "error", "an error row, not a dead thread")
-        self.assertIn("odd reply", inventory.sources["local"][0]["error"])
+        self.assertEqual(inventory.current()[1][0]["kind"], "error", "an error row, not a dead thread")
+        self.assertIn("odd reply", inventory.current()[1][0]["error"])
 
     def test_many_machines_share_a_few_connections(self):
         machines = [{"id": f"m{i}", "label": f"Box {i}"} for i in range(40)]
@@ -222,21 +233,80 @@ class BackendTests(unittest.TestCase):
 
         with patch.object(picker, "rpc", return_value={"snapshot": snapshot()}), patch.object(picker, "cli", cli):
             with picker.Inventory() as inventory:
-                deadline = time.monotonic() + 5
-                while time.monotonic() < deadline and any(
-                        e["kind"] == "error" for e in inventory.current()[1] if e["machine_id"]):
+                deadline, expected = time.monotonic() + 5, {None} | {m["id"] for m in machines}
+                while time.monotonic() < deadline and expected != (loaded := {
+                        e["machine_id"] for e in inventory.current()[1] if e["kind"] == "agent"}):
                     time.sleep(0.02)
-                loaded = {e["machine_id"] for e in inventory.current()[1] if e["kind"] == "agent"}
-        self.assertEqual(loaded, {None} | {m["id"] for m in machines})
+        self.assertEqual(loaded, expected)
         self.assertLessEqual(peak, picker.MACHINE_WORKERS)
         self.assertEqual(len(inventory.workers), 2 + picker.MACHINE_WORKERS, "not a thread per machine")
+
+    def test_machines_show_last_time_s_panes_until_they_answer(self):
+        machines, answer = [{"id": "m", "label": "Box"}], threading.Event()
+
+        def cli(args, stop=None, **kwargs):
+            if args[0] == "machine":
+                return machines
+            answer.wait(5)
+            data = snapshot()
+            data["panes"][0]["agent_status"] = status
+            return {"snapshot": data}
+
+        def remote(inventory):
+            return [e for e in inventory.current()[1] if e["machine_id"] == "m"]
+
+        def wait_for(inventory, test):
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not test(remote(inventory)):
+                time.sleep(0.01)
+            return remote(inventory)
+
+        status = "idle"
+        with patch.object(picker, "rpc", return_value={"snapshot": snapshot()}), patch.object(picker, "cli", cli):
+            answer.set()
+            with picker.Inventory() as inventory:
+                wait_for(inventory, lambda rows: rows and rows[0]["kind"] == "agent")
+                status = "blocked"  # Seen to change while open, so its time is known.
+                inventory.machines["m"]["at"] = 0  # Make the next refresh due now.
+                with inventory.due:
+                    inventory.schedule = [(0, 0, 0.01, {**machines[0], "label": "Box"})]
+                    inventory.due.notify()
+                first = wait_for(inventory, lambda rows: any(e["status"] == "blocked" for e in rows))
+            answer.clear()  # Next time, the machine is slow to answer.
+            with picker.Inventory() as inventory:
+                cached = wait_for(inventory, lambda rows: rows and rows[0]["kind"] == "agent")
+                self.assertTrue(all(e["stale"] for e in cached), "last time's panes, until it answers")
+                answer.set()
+                fresh = wait_for(inventory, lambda rows: rows and not rows[0].get("stale"))
+        blocked = next(e for e in first if e["status"] == "blocked")
+        self.assertIsNotNone(blocked["since"])
+        self.assertEqual(next(e for e in fresh if e["key"] == blocked["key"])["since"], blocked["since"],
+                         "a status that held keeps its time across openings")
+
+    def test_idle_machines_are_asked_less_often(self):
+        calls, machines = {"busy": 0, "idle": 0}, [{"id": "busy", "label": "Busy"}, {"id": "idle", "label": "Idle"}]
+
+        def cli(args, stop=None, **kwargs):
+            if args[0] == "machine":
+                return machines
+            calls[args[1]] += 1
+            data = snapshot()
+            if args[1] == "busy":
+                data["panes"][0]["terminal_title_stripped"] = f"Step {calls['busy']}"
+            return {"snapshot": data}
+
+        with patch.object(picker, "rpc", return_value={"snapshot": snapshot()}), patch.object(picker, "cli", cli), \
+                patch.object(picker, "MACHINE_INTERVAL", 0.02), patch.object(picker, "MACHINE_RATE", 1000):
+            with picker.Inventory():
+                time.sleep(0.8)
+        self.assertGreater(calls["busy"], 2 * calls["idle"])
 
     def test_the_invoking_pane_is_where_the_popup_came_from(self):
         with patch.object(picker, "rpc", return_value={"snapshot": snapshot()}), \
                 patch.object(picker, "ORIGIN", "w1:p7"):
             inventory = picker.Inventory()
         self.assertEqual(inventory.snapshot["focused_pane_id"], "w1:p7", "not the other client's focus (w1:p8)")
-        self.assertEqual([e["pane_id"] for e in inventory.sources["local"] if e["current"]], ["w1:p7"])
+        self.assertEqual([e["pane_id"] for e in inventory.current()[1] if e["current"]], ["w1:p7"])
 
     def test_remote_focus_never_uses_local_ids(self):
         entry = picker.entries(snapshot(), {"id": "remote-id", "label": "Remote", "session": "agents"})[0]
@@ -420,6 +490,17 @@ class DisplayTests(unittest.TestCase):
         self.assertEqual(view.current().fields["label"], "nvim")
         view.scope = 1
         self.assertTrue(all(i.entry["kind"] == "agent" for i, _ in view.results(2, reordered)))
+
+    def test_typing_on_and_refreshing_rank_like_starting_over(self):
+        entries = picker.entries(snapshot()) + commands.catalog(snapshot(), {})
+        view = picker_ui.View()
+        for version, query in enumerate(["o", "op", "ope", "ope ", "ope a", "ope aw", "ope a", "!nvim", "a | p"]):
+            entries[0] = {**entries[0], "terminal_title_stripped": f"Awaiting approval {version}"}
+            view.query = query
+            typed = [(item.entry["id"], hl) for item, hl in view.results(version // 3, entries)]
+            fresh = picker_ui.View()
+            fresh.query = query
+            self.assertEqual(typed, [(item.entry["id"], hl) for item, hl in fresh.results(0, entries)], query)
 
     def test_close_targets_the_confirmed_pane_even_if_selection_moves(self):
         rows = Rows(picker.entries(snapshot()))
@@ -714,6 +795,12 @@ class DrawTests(unittest.TestCase):
                 time.sleep(0.02)
             picker_ui.draw(frame, palette, view, rows.entries, view.results(1, rows.entries), 0, previewer, wall=wall)
         return frame, view
+
+    def test_only_spinners_on_screen_keep_the_frames_coming(self):
+        _, view = self.draw(24, 140)
+        self.assertTrue(view.hits["animated"], "a working agent is listed")
+        _, view = self.draw(24, 140, scope=2)
+        self.assertFalse(view.hits["animated"], "only terminals are listed")
 
     def test_layout_keeps_selection_visible_and_fits_every_size(self):
         base = picker.entries(snapshot())
