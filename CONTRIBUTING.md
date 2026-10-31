@@ -21,7 +21,7 @@ checkout. Herdr re-reads the manifest live, so there's nothing to restart.
 | `ruff check . && ruff format --check .`                | Lint and check formatting, as CI does         |
 | `python3 -m herdscope list`                            | Print the ranked inventory as JSON            |
 | `herdr plugin log list --plugin emanuel2718.herdscope` | See what the hooks and actions ran, and how   |
-| `python3 tools/benchmark.py`                           | Time keystrokes, refreshes and frames         |
+| `python3 tools/benchmark.py [--fzf]`                   | Time keystrokes and frames; compare with fzf  |
 | `python3 tools/screenshot.py`                          | Redraw `assets/screenshot.png` (needs Chrome) |
 
 The tests drive the real picker through a pseudo-terminal against a stand-in Herdr, so they

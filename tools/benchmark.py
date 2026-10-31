@@ -3,20 +3,26 @@
 Builds a session of N made-up panes, then times the picker's real work as the UI loop does it:
 working out the results and drawing a frame into a 45x170 canvas. No Herdr needed.
 
-    python3 tools/benchmark.py [N ...]      # default: 100 1000 10000
+With --fzf, it also ranks the same panes for the same queries with `fzf --filter`, for a
+reference point outside Herdscope, and checks both rank them the same way.
+
+    python3 tools/benchmark.py [--fzf] [N ...]      # default: 100 1000 10000
 """
 
+import os
 import random
+import shutil
 import statistics
+import subprocess
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from herdscope import app, inventory, render, theme
+from herdscope import app, fuzzy, inventory, render, theme
 from herdscope.terminal import Canvas, Style
-from herdscope.view import View
+from herdscope.view import Item, View
 
 WORDS = ("fix", "add", "refactor", "router", "api", "billing", "webhook", "test", "flaky", "docs", "release",
          "notes", "migrate", "typed", "routes", "cuda")  # fmt: skip
@@ -79,13 +85,59 @@ def measure(count):
     }
 
 
+def against_fzf(count):
+    """Milliseconds to rank every pane for each typed query from scratch, here and in fzf.
+
+    Herdscope starts each query with empty caches, as fzf starts each process with nothing. fzf
+    is timed as the process a picker would run, so its start is part of its cost; that start is
+    reported separately too.
+    """
+    items = [Item(entry) for entry in inventory.entries(snapshot(count, random.Random(1)))]
+    lines = "\n".join(item.text for item in items)
+    env = {**os.environ, "FZF_DEFAULT_OPTS": ""}
+
+    def fzf(query, text):
+        began = time.perf_counter()
+        found = subprocess.run(["fzf", "--filter", query, "--tiebreak=index"], input=text, env=env,
+                               capture_output=True, text=True, check=False).stdout.splitlines()  # fmt: skip
+        return (time.perf_counter() - began) * 1000, found
+
+    ours, theirs, same = [], [], True
+    for query in TYPED:
+        fuzzy.bonuses.cache_clear()
+        fuzzy.haystacks.cache_clear()
+        began = time.perf_counter()
+        ranked = fuzzy.rank(items, fuzzy.Query(query), lambda item: item.text)
+        ours.append((time.perf_counter() - began) * 1000)
+        elapsed, found = fzf(query, lines)
+        theirs.append(elapsed)
+        same = same and [item.text for item in ranked] == found
+    return {
+        "herdscope": statistics.mean(ours),
+        "fzf --filter": statistics.mean(theirs),
+        "  of which start": statistics.median(fzf("x", "")[0] for _ in range(5)),
+        "same ranking": same,
+    }
+
+
+def table(title, results):
+    counts = list(results)
+    print(f"{title:<18}" + "".join(f"{f'{count:,} panes':>14}" for count in counts))
+    for name in results[counts[0]]:
+        cells = (results[count][name] for count in counts)
+        print(f"{name:<18}" + "".join(f"{'yes' if cell is True else 'NO' if cell is False else f'{cell:.2f}':>14}"
+                                      for cell in cells))  # fmt: skip
+
+
 def main():
-    counts = [int(arg) for arg in sys.argv[1:]] or [100, 1000, 10000]
-    results = {count: measure(count) for count in counts}
-    names = list(next(iter(results.values())))
-    print(f"{'ms':<18}" + "".join(f"{f'{count:,} panes':>14}" for count in counts))
-    for name in names:
-        print(f"{name:<18}" + "".join(f"{results[count][name]:>14.2f}" for count in counts))
+    compare = "--fzf" in sys.argv[1:]
+    counts = [int(arg) for arg in sys.argv[1:] if arg != "--fzf"] or [100, 1000, 10000]
+    table("ms", {count: measure(count) for count in counts})
+    if compare:
+        if not shutil.which("fzf"):
+            sys.exit("--fzf needs fzf on PATH")
+        print()
+        table("rank, ms/query", {count: against_fzf(count) for count in counts})
 
 
 if __name__ == "__main__":

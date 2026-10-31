@@ -1,5 +1,6 @@
 """The development tools in tools/, kept working as the code they drive changes."""
 
+import shutil
 import sys
 import unittest
 
@@ -24,3 +25,7 @@ class ToolTests(unittest.TestCase):
         html = screenshot.page(screenshot.frame(tokens), tokens)
         for text in ("Migrate router to typed routes", "gpu-box", "Allow Codex to edit", "Herdscope"):
             self.assertIn(text, html)
+
+    @unittest.skipUnless(shutil.which("fzf"), "fzf is not installed")
+    def test_benchmark_ranks_panes_exactly_as_fzf_does(self):
+        self.assertTrue(benchmark.against_fzf(300)["same ranking"])

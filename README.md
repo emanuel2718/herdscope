@@ -162,7 +162,15 @@ Herdscope is built to stay out of the way, however many panes you have.
 | You focus a pane (popup closed)          | ~30 ms of CPU, to count the visit                       |
 
 Measured on an Apple M2 Max with Python 3.15; `python3 tools/benchmark.py` measures the picker's
-share on your machine, at any number of panes. How it gets there:
+share on your machine, at any number of panes.
+
+Against fzf itself (`python3 tools/benchmark.py --fzf`), Herdscope ranks the same panes for the
+same queries in exactly the same order. Ranking from scratch, it beats starting `fzf --filter` up
+to about a thousand panes; at ten thousand, fzf's multi-threaded Go is about three times faster
+(15 ms to 43 ms), while typing in Herdscope stays near 25 ms a keystroke because it only
+re-checks what still matched.
+
+How it gets there:
 
 - **Nothing runs while it's closed** but the two hooks above. At 300 agents each changing status
   once a minute, the status hook uses under 2% of one core.
