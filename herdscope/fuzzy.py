@@ -394,15 +394,19 @@ def haystacks(text):
 
 
 def parse(query):
-    """fzf's parseTerms: AND of OR-sets of (kind, inverse, text, case_sensitive, accented)."""
-    sets, current, after_bar = [], [], False
+    """fzf's parseTerms: AND of OR-sets of (kind, inverse, text, case_sensitive, accented).
+
+    As in fzf, a term after "|" joins the set before it, even past a token that came out empty.
+    """
+    sets, current, after_bar, joining = [], [], False, False
     for token in query.replace("\\ ", "\t").split(" "):
         text = token.replace("\t", " ")
         if not text:
             continue
         if current and not after_bar and text == "|":
-            after_bar = True
+            after_bar, joining = True, True
             continue
+        after_bar = False
         case_sensitive = text != text.lower()
         kind, inverse = FUZZY, False
         if text.startswith("!"):
@@ -417,13 +421,13 @@ def parse(query):
             kind, text = (EQUAL if kind == SUFFIX else PREFIX), text[1:]
         if text:
             term = (kind, inverse, text if case_sensitive else lower(text), case_sensitive, normalize(text) != text)
-            if after_bar:
+            if joining:
                 current.append(term)
             else:
                 if current:
                     sets.append(current)
                 current = [term]
-        after_bar = False
+            joining = False
     if current:
         sets.append(current)
     return sets

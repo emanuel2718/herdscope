@@ -284,6 +284,8 @@ def handle(view, event, now):
     if view.prompt:
         return answer(view, event)
     if view.confirm:
+        if kind == "mouse" and not value[3]:
+            return None  # The release of the click that asked, say a double-click's.
         # Only y confirms, as the footer says. Act on exactly what was asked about,
         # even if a refresh moved the selection.
         confirmed = event in (("text", "y"), ("text", "Y"))

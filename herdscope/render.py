@@ -567,6 +567,7 @@ def draw(canvas, palette, view, entries, rows, now, previewer, loading=False, wa
     if height < 6 or width < 30:
         p.text(0, 1, "Enlarge the popup · esc closes", "overlay1", width=width - 2)
         previewer.idle()
+        view.help = False  # It couldn't show, so it mustn't take the next key.
         return
 
     # The list panel takes the sidebar's tone and the preview the pane's, like Herdr itself.
@@ -658,20 +659,19 @@ def draw_help(p, height, width):
         sections = sections[:1]  # A short popup shows the keys; the search syntax is in the README.
     keys = max(text_width(key) for _, rows in sections for key, _ in rows) + 3
     inner = min(width - 4, keys + max(text_width(text) for _, rows in sections for _, text in rows) + 4)
-    lines = sum(len(rows) + 2 for _, rows in sections) + 1
-    top, left = max(0, (height - lines - 2) // 2), max(0, (width - inner) // 2)
-    for y in range(top, min(height, top + lines + 2)):
-        p.fill(y, left, inner, "surface0")
-    y = top + 1
+    # The box's lines as (key or title, text, role): sections, a blank line after each, then how
+    # to close it. Too short a popup cuts the last keys, never how to close.
+    lines = []
     for title, rows in sections:
-        p.text(y, left + 2, title, "accent", "surface0", inner - 4, bold=True)
-        y += 1
-        for key, text in rows:
-            p.text(y, left + 2, key, "text", "surface0", keys, bold=True)
-            p.text(y, left + 2 + keys, text, "subtext0", "surface0", max(0, inner - 4 - keys))
-            y += 1
-        y += 1
-    p.text(y, left + 2, "Press any key to close", "overlay1", "surface0", inner - 4, italic=True)
+        lines += [(title, "", "accent"), *((key, text, "text") for key, text in rows), ("", "", "text")]
+    lines = [*lines[: max(0, height - 3)], ("", "Press any key to close", "overlay1")]
+    top, left = max(0, (height - len(lines) - 2) // 2), max(0, (width - inner) // 2)
+    for y in range(top, min(height, top + len(lines) + 2)):
+        p.fill(y, left, inner, "surface0")
+    for y, (key, text, role) in enumerate(lines, top + 1):
+        p.text(y, left + 2, key, role, "surface0", keys, bold=True)
+        p.text(y, left + 2 + keys * bool(key), text, "subtext0" if key else role, "surface0",
+               max(0, inner - 4 - keys * bool(key)), italic=not key)  # fmt: skip
 
 
 def draw_message(canvas, palette, lines):

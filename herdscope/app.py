@@ -75,9 +75,13 @@ class Previewer:
                 entry, lines = target
                 try:
                     text = self.read(entry, lines)
-                    # Unchanged output costs no parsing and no redraw.
-                    unchanged = self.last == (entry["id"], text)
-                    result = None if unchanged else (parse_ansi(text, self.base), None, lines)
+                    # Unchanged output costs no parsing and no redraw, unless it was asked for
+                    # deeper: then it shows the pane's history ends there, so scrolling stops.
+                    result = None
+                    if self.last != (entry["id"], text):
+                        result = (parse_ansi(text, self.base), None, lines)
+                    elif (cached := self.get(entry["id"])) and cached[2] < lines:
+                        result = (*cached[:2], lines)
                     self.last = (entry["id"], text)
                 except Exception as error:  # A dead preview thread would stop every preview.
                     self.last = None

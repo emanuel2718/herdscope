@@ -69,11 +69,11 @@ def entries(snapshot, machine=None, origin=None):
     )
     # Labels are cleaned once per workspace and tab, not once per pane.
     workspaces = {
-        w["workspace_id"]: (herdr.clean(w.get("label", w["workspace_id"])), w.get("number", 0))
+        w["workspace_id"]: (herdr.clean(w.get("label", w["workspace_id"])), w.get("number") or 0)
         for w in snapshot.get("workspaces", [])
     }
     tabs = {
-        t["tab_id"]: (herdr.clean(t.get("label", t["tab_id"].split(":")[-1])), t.get("number", 0))
+        t["tab_id"]: (herdr.clean(t.get("label", t["tab_id"].split(":")[-1])), t.get("number") or 0)
         for t in snapshot.get("tabs", [])
     }
     agents = {a["pane_id"]: a for a in snapshot.get("agents", [])}
@@ -116,7 +116,7 @@ def entries(snapshot, machine=None, origin=None):
 def error_entry(label, message, machine_id=None, pending=False):
     """A row standing in for a server that failed, or a machine still connecting."""
     return {
-        "id": json.dumps(["error", machine_id or label]),
+        "id": json.dumps(["error", machine_id, label]),
         "kind": "error",
         "key": None,
         "machine": herdr.clean(label),
@@ -254,7 +254,7 @@ class Inventory:
         after any change only joins sorted runs. A pane that didn't change keeps its entry
         object, so the UI can tell what changed by identity rather than by comparing.
         """
-        old = {entry["id"]: pair for pair in self.sources.get(source, ()) for entry in pair[1:]}
+        old = {pair[1]["id"]: pair for pair in self.sources.get(source, ())}
         ranked, changed = [], len(old) != len(values)
         for entry in values:
             pair = old.get(entry["id"])
@@ -303,13 +303,13 @@ class Inventory:
                 snapshot = herdr.rpc("session.snapshot")["snapshot"]
                 if snapshot == previous:
                     continue  # Most seconds, nothing changed: there is nothing to work out.
-                values = history.stamp(entries(snapshot, origin=self.origin), self.since, self.seen)
+                self.publish("local", history.stamp(entries(snapshot, origin=self.origin), self.since, self.seen))
             except Exception as error:  # A dead refresh thread would freeze the list silently.
-                snapshot, values = None, [error_entry("Local", str(error))]
+                snapshot = None
+                self.publish("local", [error_entry("Local", str(error))])
             finally:
                 pause = max(1, 20 * (time.monotonic() - began))
             previous = snapshot
-            self.publish("local", values)
 
     def discover(self):
         try:
@@ -326,15 +326,15 @@ class Inventory:
         # of machines appear at once. Their status times carry over while the status holds.
         cached, now = load_machines(), time.time()
         for machine in machines:
-            last = cached.get(machine["id"])
+            source, last = ("machine", machine["id"]), cached.get(machine["id"])
             if last and now - last["at"] < MACHINE_CACHE_AGE:
                 self.machines[machine["id"]] = last
                 for entry in last["entries"]:
                     if entry.get("since"):
                         self.since[entry["key"]] = (entry["status"], entry["since"])
-                self.publish(machine["id"], [{**entry, "stale": True} for entry in last["entries"]])
+                self.publish(source, [{**entry, "stale": True} for entry in last["entries"]])
             else:
-                self.publish(machine["id"], [error_entry(machine["label"], "Connecting…", machine["id"], True)])
+                self.publish(source, [error_entry(machine["label"], "Connecting…", machine["id"], True)])
         interval = max(MACHINE_INTERVAL, len(machines) / MACHINE_RATE)
         with self.due:
             self.schedule = [(0, order, interval, machine) for order, machine in enumerate(machines)]
@@ -358,15 +358,17 @@ class Inventory:
                 last = self.machines.get(machine["id"], {}).get("entries")
                 wait = min(wait * 2, interval * MACHINE_BACKOFF) if values == last else interval
                 self.machines[machine["id"]] = {"at": time.time(), "entries": values}
+                self.publish(("machine", machine["id"]), values)
             except Exception as error:  # A dead worker would leave its machines stale silently.
-                values, wait = [error_entry(machine["label"], str(error), machine["id"])], interval * MACHINE_BACKOFF
-            self.publish(machine["id"], values)
-            with self.due:
-                # A little jitter, so machines first asked together drift apart instead of
-                # falling due together every round.
-                when = time.monotonic() + wait * random.uniform(0.75, 1.25)
-                heapq.heappush(self.schedule, (when, order, wait, machine))
-                self.due.notify()
+                wait = interval * MACHINE_BACKOFF
+                self.publish(("machine", machine["id"]), [error_entry(machine["label"], str(error), machine["id"])])
+            finally:
+                with self.due:
+                    # A little jitter, so machines first asked together drift apart instead of
+                    # falling due together every round.
+                    when = time.monotonic() + wait * random.uniform(0.75, 1.25)
+                    heapq.heappush(self.schedule, (when, order, wait, machine))
+                    self.due.notify()
 
     def start(self, target, *args):
         thread = threading.Thread(target=target, args=args, daemon=True)

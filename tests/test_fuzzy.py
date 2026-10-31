@@ -27,6 +27,8 @@ class FuzzyTests(unittest.TestCase):
     def test_ranking_matches_the_fzf_binary(self):
         queries = [
             "rana vue",
+            "rana | ^ vue",
+            "nvim | ! rana",
             "rana",
             "vue",
             "nv",

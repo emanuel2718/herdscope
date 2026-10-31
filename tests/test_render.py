@@ -190,3 +190,9 @@ class RenderTests(unittest.TestCase):
         view.query, view.cursor = "why", 3
         handle(view, ("text", "?"), 0)
         self.assertEqual((view.query, view.help), ("why?", False), "after other text, ? is just text")
+
+    def test_help_in_a_short_popup_still_says_how_to_close_it(self):
+        frame, _ = self.draw(9, 90, help=True)
+        self.assertIn("Press any key to close", frame.text())
+        _, view = self.draw(5, 20, help=True)
+        self.assertFalse(view.help, "too small to show it, so the next key does what it says")

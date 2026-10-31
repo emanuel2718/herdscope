@@ -22,6 +22,8 @@ class TerminalTests(unittest.TestCase):
             "\x1b[3~": ("key", "delete"),
             "\x1b[6~": ("key", "pgdn"),
             "\x1b[Z": ("key", "shift-tab"),
+            "\x1bOP": ("key", "f1"),
+            "\x1b[11~": ("key", "f1"),
             "\x1bb": ("key", "alt-b"),
             "\x1b\x7f": ("key", "alt-backspace"),
             "\r": ("key", "enter"),
@@ -43,6 +45,10 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(parse_input("\x1b[1;"), (None, 0))
         self.assertEqual(parse_input("\x1b[200~unfinished"), (None, 0))
         self.assertEqual(parse_input("abc\x1b[A"), (("text", "abc"), 3))
+
+    def test_private_sequences_ending_in_m_are_not_colors(self):
+        lines = parse_ansi("\x1b[31mred\x1b[>4;1m still red", Style("#ffffff", "#000000"))
+        self.assertEqual([style.fg for _, style in lines[0]], [1, 1])
 
     def test_preview_decodes_colors_and_drops_other_controls(self):
         base = Style("#ffffff", "#000000")

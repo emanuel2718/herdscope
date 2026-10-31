@@ -117,6 +117,19 @@ class ViewTests(unittest.TestCase):
         self.assertIsNone(handle(view, ("mouse", (0, 5, 6, True)), 1.2))
         self.assertEqual(view.prompt, view.selected, "a command asks for its name, never tries to focus")
 
+    def test_double_clicking_a_command_that_confirms_waits_for_the_answer(self):
+        entries = Rows(inventory.entries(snapshot()) + list(catalog().values())).entries
+        view = View()
+        view.scope = COMMANDS
+        view.query = "close tab"
+        rows = view.results(1, entries)
+        line = next(i for i, item in enumerate(rows) if item.entry["title"] == "Close tab")
+        view.hits = {"rows": {6: line}, "tabs": [], "tabs_y": 3, "preview": None}
+        for pressed, at in ((True, 1.0), (False, 1.05), (True, 1.2), (False, 1.25)):
+            handle(view, ("mouse", (0, 5, 6, pressed)), at)
+        self.assertEqual(view.confirm, "command:close_tab", "the second click's release doesn't answer")
+        self.assertEqual(handle(view, ("text", "y"), 2), "run")
+
     def test_selection_change_resets_the_preview_scroll(self):
         rows = Rows(inventory.entries(snapshot()))
         view, _ = rows.view()

@@ -152,6 +152,31 @@ class InventoryTests(StateTestCase):
                 time.sleep(0.8)
         self.assertGreater(calls["busy"], 2 * calls["idle"])
 
+    def test_missing_workspace_and_tab_numbers_still_sort(self):
+        data = snapshot()
+        data["workspaces"][0]["number"] = None
+        data["tabs"][0]["number"] = None
+        data["workspaces"].append({"workspace_id": "w2", "label": "Beta"})
+        data["panes"].append({**data["panes"][3], "pane_id": "w2:p1", "terminal_id": "t-9", "workspace_id": "w2"})
+        with patch.object(herdr, "rpc", return_value={"snapshot": data}):
+            panes = inventory.Inventory()
+        self.assertEqual(len(panes.current()[1]), 6)
+
+    def test_a_machine_named_like_the_local_server_is_kept_apart(self):
+        machines = [{"id": "local", "label": "Local"}, {"id": "discovery", "label": "Machines"}]
+
+        def cli(args, stop=None, **kwargs):
+            return machines if args[0] == "machine" else {"snapshot": snapshot()}
+
+        with patch.object(herdr, "rpc", return_value={"snapshot": snapshot()}), patch.object(herdr, "cli", cli):
+            with inventory.Inventory() as panes:
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and len(panes.current()[1]) < 5 + 3 + 3:
+                    time.sleep(0.02)
+        found = panes.current()[1]
+        self.assertEqual(sum(e["machine_id"] is None for e in found), 5, "every local pane")
+        self.assertEqual({e["machine_id"] for e in found if e["machine_id"]}, {"local", "discovery"})
+
     def test_the_invoking_pane_is_where_the_popup_came_from(self):
         with (
             patch.object(herdr, "rpc", return_value={"snapshot": snapshot()}),

@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 
 from herdscope import app, herdr, inventory
+from herdscope.terminal import Style
 from tests.support import PREVIEW, snapshot
 
 
@@ -154,3 +155,15 @@ class WaitTests(unittest.TestCase):
         self.assertEqual(app.wait(view, 10), app.IDLE)
         view.notice = ("Closed nvim", "overlay1", 10.5)
         self.assertAlmostEqual(app.wait(view, 10), 0.51, places=5, msg="when the notice runs out")
+
+
+class PreviewerTests(unittest.TestCase):
+    def test_reading_deeper_than_a_pane_goes_still_records_the_depth(self):
+        with app.Previewer(Style(), lambda entry, lines: "only\nthree\nlines\n") as previewer:
+            entry = {"id": "pane"}
+            for lines in (10, 40):
+                previewer.want(entry, lines)
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline and (previewer.get("pane") or (0, 0, 0))[2] < lines:
+                    time.sleep(0.01)
+        self.assertEqual(previewer.get("pane")[2], 40, "so the preview knows its history ends there")

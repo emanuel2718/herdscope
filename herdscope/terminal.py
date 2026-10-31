@@ -272,7 +272,8 @@ def parse_line(raw, state, base):
                 runs.append((cleaned, Style(fg, bg, bold, dim, italic, underline)))
         if match is None:
             break
-        if match.group(3) == "m" and not match.group(2):
+        # SGR, but not a private sequence that happens to end in m, like xterm's \x1b[>4;1m.
+        if match.group(3) == "m" and not match.group(2) and not match.group(1).startswith(("<", "=", ">", "?")):
             state = apply_sgr(state, match.group(1), base)
         position = match.end()
     return runs, state
@@ -281,7 +282,8 @@ def parse_line(raw, state, base):
 # Input decoding. Events: ("key", name), ("text", str), ("paste", str), ("mouse", (button, x, y, pressed)).
 CSI = re.compile(r"\x1b\[([0-?]*)([ -/]*)([@-~])")
 CURSOR = {"A": "up", "B": "down", "C": "right", "D": "left", "H": "home", "F": "end"}
-TILDE = {"1": "home", "7": "home", "4": "end", "8": "end", "2": "insert", "3": "delete", "5": "pgup", "6": "pgdn"}
+TILDE = {"1": "home", "7": "home", "4": "end", "8": "end", "2": "insert", "3": "delete", "5": "pgup", "6": "pgdn",
+         "11": "f1"}  # fmt: skip
 MODIFIERS = {
     2: "shift-",
     3: "alt-",
