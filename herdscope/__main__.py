@@ -9,7 +9,8 @@ This file must parse on old Pythons, so that one too old can say so.
 
 import sys
 
-USAGE = "usage: python3 -m herdscope [ui | record-visit | list]"
+ACTIONS = ("ui", "record-visit", "list")
+USAGE = f"usage: python3 -m herdscope [{' | '.join(ACTIONS)}]"
 
 
 def fail(message):

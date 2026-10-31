@@ -1,0 +1,37 @@
+name: Bug report
+description: Something in Herdscope doesn't work as it should.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead. Screenshots help.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open Herdscope with prefix+f
+        2. Type "…"
+        3. …
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: The output of `herdr --version; python3 --version; uname -sm`
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Plugin logs
+      description: The output of `herdr plugin log list --plugin emanuel2718.herdscope`, if it shows an error.
+      render: json
+  - type: input
+    id: terminal
+    attributes:
+      label: Terminal
+      description: The terminal emulator you run Herdr in, e.g. Ghostty 1.2, iTerm2 3.6, Alacritty.
