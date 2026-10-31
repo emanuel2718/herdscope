@@ -1,6 +1,7 @@
 # Herdscope runs straight from its checkout as a Herdr plugin, so this file only configures tools.
 
 [tool.ruff]
+required-version = ">=0.16"
 line-length = 120
 target-version = "py311"
 

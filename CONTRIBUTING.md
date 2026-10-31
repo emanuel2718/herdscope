@@ -21,6 +21,7 @@ checkout. Herdr re-reads the manifest live, so there's nothing to restart.
 | `ruff check . && ruff format --check .`                | Lint and check formatting, as CI does         |
 | `python3 -m herdscope list`                            | Print the ranked inventory as JSON            |
 | `herdr plugin log list --plugin emanuel2718.herdscope` | See what the hooks and actions ran, and how   |
+| `python3 tools/benchmark.py`                           | Time keystrokes, refreshes and frames         |
 | `python3 tools/screenshot.py`                          | Redraw `assets/screenshot.png` (needs Chrome) |
 
 The tests drive the real picker through a pseudo-terminal against a stand-in Herdr, so they
@@ -57,6 +58,8 @@ These are what keep Herdscope fast and dependable. Changes should keep them true
   threads; the loop only draws and handles input. A slow machine must never delay local panes.
 - **Work only on change.** Typing re-matches only what the query can still match, refreshes
   rebuild only panes that changed, and the terminal is sent only the cells that changed.
+- **Measure, don't guess.** Run `python3 tools/benchmark.py` before and after a change to
+  matching, the view or drawing, and say what moved in the pull request.
 - **Startup is a budget.** The popup should draw within tens of milliseconds of the key press.
   Check `python3 -X importtime -c 'import herdscope.app'` before adding an import to the startup path.
 - **Matches fzf.** Ranking and highlighting follow fzf's algorithm, and the tests hold them to

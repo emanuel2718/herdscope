@@ -161,7 +161,8 @@ Herdscope is built to stay out of the way, however many panes you have.
 | An agent's status changes (popup closed) | ~3 ms of CPU, in `sh`                                   |
 | You focus a pane (popup closed)          | ~30 ms of CPU, to count the visit                       |
 
-Measured on an Apple M2 Max with Python 3.15. How it gets there:
+Measured on an Apple M2 Max with Python 3.15; `python3 tools/benchmark.py` measures the picker's
+share on your machine, at any number of panes. How it gets there:
 
 - **Nothing runs while it's closed** but the two hooks above. At 300 agents each changing status
   once a minute, the status hook uses under 2% of one core.
