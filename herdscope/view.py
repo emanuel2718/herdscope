@@ -53,7 +53,8 @@ class Item:
                 "agent": entry["agent"],
                 "status": entry["status"],
                 "path": inventory.display_path(entry) if entry["kind"] == "agent" else "",
-                "machine": entry["machine"],
+                # Only other machines are named: "Local" on every row would be noise to read and match.
+                "machine": entry["machine"] if entry.get("machine_id") else "",
             }
         self.fields, self.spans, parts, at = values, {}, [], 0
         # One search line, as fzf sees it; spans map match positions back to fields.

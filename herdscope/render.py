@@ -6,7 +6,7 @@ Everything is drawn into a Canvas every frame; the terminal then writes only wha
 import time
 
 from herdscope import inventory
-from herdscope.terminal import Style, clip, text_width
+from herdscope.terminal import Style, clip, clip_start, text_width
 from herdscope.view import COMMANDS, SCOPE_KINDS, SCOPES
 
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -26,18 +26,20 @@ EMPTY = {
     "terminal": ("No terminals", ""),
     "command": ("No commands", ""),
 }
+# Key hints as (key, what it does, rank): when the footer is short, the highest ranks go first.
 HINTS = {
     "panes": (
-        ("↵", "go"),
-        ("⇥", "scope"),
-        (">", "commands"),
-        ("^/", "preview"),
-        ("⇧↑↓", "scroll"),
-        ("^x", "close"),
-        ("esc", "quit"),
+        ("↵", "go", 0),
+        ("⇥", "scope", 3),
+        (">", "commands", 2),
+        ("^/", "preview", 5),
+        ("⇧↑↓", "scroll", 6),
+        ("^x", "close", 4),
+        ("esc", "quit", 1),
     ),
-    "commands": (("↵", "run"), ("⇥", "scope"), ("⌫", "back to panes"), ("esc", "quit")),
-    "input": (("↵", "apply"), ("esc", "back"), ("^u", "clear")),
+    "commands": (("↵", "run", 0), ("⇥", "scope", 2), ("⌫", "back to panes", 3), ("esc", "quit", 1)),
+    "input": (("↵", "apply", 0), ("esc", "back", 1), ("^u", "clear", 2)),
+    "confirm": (("y", "confirm", 0), ("esc", "cancel", 1)),
 }
 STATUS_WIDTH = len("working 11mo")
 
@@ -90,16 +92,21 @@ class Painter:
     def __init__(self, canvas, palette):
         self.canvas, self.palette = canvas, palette
 
-    def text(self, y, x, text, fg="text", bg="panel_bg", width=None, bold=False, hl=None, italic=False):
-        """Draw clipped text with matched characters highlighted; returns the column after it."""
-        shown = clip(text, width) if width is not None else text
+    def text(self, y, x, text, fg="text", bg="panel_bg", width=None, bold=False, hl=None, italic=False, tail=False):
+        """Draw text clipped to `width`, matched characters highlighted; returns the column after it.
+
+        Clipping keeps the start of the text, or with `tail` its end, which is how paths read best.
+        """
+        shown = text if width is None else (clip_start if tail else clip)(text, width)
         style = self.palette(fg, bg, bold, italic)
         if not hl:
             return self.canvas.put(y, x, shown, style)
         accent = self.palette("accent", bg, True)
-        keep = len(shown) if shown == text else len(shown) - 1
+        # Which characters of `shown` are the text's own (not the ellipsis), and where they came from.
+        cut = shown != text
+        start, stop, offset = (1, len(shown), len(text) - len(shown)) if cut and tail else (0, len(shown) - cut, 0)
         for i, char in enumerate(shown):
-            x = self.canvas.put(y, x, char, accent if i < keep and i in hl else style)
+            x = self.canvas.put(y, x, char, accent if start <= i < stop and i + offset in hl else style)
         return x
 
     def fill(self, y, x, width, bg="panel_bg", char=" ", fg="text"):
@@ -112,7 +119,8 @@ def columns(items, width):
     Widths come from every pane, not just the matches, so typing never moves a column.
     """
     panes = [item for item in items if item.entry["kind"] in ("agent", "terminal")]
-    caps = [("machine", 14 if len({item.entry["machine"] for item in panes}) > 1 else 0), ("agent", 12), ("place", 24)]
+    # Only panes on other machines name theirs; the column appears once there are some.
+    caps = [("machine", 14), ("agent", 12), ("place", 24)]
     chosen = [
         (name, size)
         for name, cap in caps
@@ -219,19 +227,16 @@ def draw_row(p, y, x, width, item, hl, selected, cols, now, wall, backgrounds):
     )
     extras = [("current", faint, None, True)] if current else []
     if fields.get("detail") or entry["kind"] == "error":
-        extras.append(
-            (
-                fields.get("detail") or fields["path"],
-                "red" if entry["status"] == "offline" else faint,
-                hl.get("detail") or hl.get("path"),
-                False,
-            )
-        )
+        if entry["kind"] == "error":
+            extras.append((fields["path"], "red" if entry["status"] == "offline" else faint, hl.get("path"), False))
+        else:
+            extras.append((fields["detail"], faint, hl.get("detail"), False))
     for value, role, marks, italic in extras:
         room = column - at - 2
         if room < 6:
             break
-        at = p.text(y, at + 2, value, role, bg, room, hl=marks, italic=italic)
+        # A terminal's folder keeps its end when cut; an error message, its start.
+        at = p.text(y, at + 2, value, role, bg, room, hl=marks, italic=italic, tail=entry["kind"] != "error")
 
 
 def draw_split(p, y, x, width, height, entry, entries):
@@ -267,14 +272,17 @@ def draw_split(p, y, x, width, height, entry, entries):
 
 
 def draw_header(p, top, x, width, glyph, role, title, hl, parts):
-    """A preview's first two lines: what it is, then where, as (text, role, highlights) parts."""
+    """A preview's first two lines: what it is, then where, as (text, role, highlights) parts.
+
+    A part that doesn't fit is cut, keeping its end if it's the last: that is the folder.
+    """
     p.text(top, x, glyph, role, bold=True)
     p.text(top, x + 2, title, "text", width=width - 2, bold=True, hl=hl)
     at = x + 2
     for i, (text, role, marks) in enumerate(parts):
         if i:
             at = p.text(top + 1, at, "  ·  ", "overlay0", width=max(0, x + width - at))
-        at = p.text(top + 1, at, text, role, width=max(0, x + width - at), hl=marks)
+        at = p.text(top + 1, at, text, role, width=max(0, x + width - at), hl=marks, tail=i == len(parts) - 1)
     return top + 1
 
 
@@ -358,6 +366,8 @@ def draw_preview(p, view, item, hl, area, previewer, now, inset):
         parts = [(entry["status"], STATUS_ROLE[entry["status"]], None)]
     else:
         parts = [(entry["agent"], "overlay1", hl.get("agent"))] if entry["kind"] == "agent" else []
+        if entry.get("machine_id"):
+            parts.append((item.fields["machine"], "overlay1", hl.get("machine")))
         parts.append((item.fields["place"], "overlay1", hl.get("place")))
         path = item.fields.get("path") or item.fields.get("detail")
         if path:
@@ -416,7 +426,7 @@ def wrap(text, width, lines):
 def layout(height, width, preview):
     """The list panel and preview as (x, y, width, height), and how they sit: "beside", "below" or None."""
     if preview and width >= 100:
-        side = max(56, min(96, width // 2 - 2))
+        side = max(56, min(110, width * 11 // 20))  # The list's labels matter more than the preview's edge.
         return (0, 0, side, height), (side, 0, width - side, height), "beside"
     if preview and height >= 24:
         top = height * 11 // 20
@@ -424,29 +434,41 @@ def layout(height, width, preview):
     return (0, 0, width, height), None, None
 
 
+def hints_width(hints):
+    return sum(text_width(key) + 1 + text_width(label) for key, label, _ in hints) + 3 * (len(hints) - 1)
+
+
+def draw_hints(p, y, x, room, hints, bg):
+    """Key hints in their order, leaving out the least needed until they fit in `room` cells."""
+    hints = list(hints)
+    while hints and hints_width(hints) > room:
+        hints.remove(max(hints, key=lambda hint: hint[2]))
+    for key, label, _ in hints:
+        x = p.text(y, x, key, "subtext0", bg, bold=True)
+        x = p.text(y, x + 1, label, "overlay1", bg) + 3
+    return x
+
+
 def footer(p, view, y, x, width, bg):
     """The panel's last line: a close confirmation, else a passing notice, else key hints."""
     limit = x + width - 2
     pending = view.find(view.confirm) if view.confirm else None
     if pending:
+        # The question gives way to its answers, which must always show.
         entry = pending.entry
-        question = (
-            entry.get("confirm") or f"Close {entry['agent'] or 'terminal'} in {entry['workspace']}:{entry['tab']}?"
+        question = entry.get("confirm") or (
+            f"Close {entry['agent'] or 'terminal'} in {entry['workspace']}:{entry['tab']}?"
+            + (" This stops the agent." if entry["kind"] == "agent" else "")
         )
-        at = p.text(y, x + 2, question, "peach", bg, limit - x - 2, bold=True)
-        if entry["kind"] == "agent":
-            at = p.text(y, at + 1, "This stops the agent.", "peach", bg, max(0, limit - at - 1))
-        p.text(y, at + 2, "y confirms · other keys cancel", "overlay0", bg, max(0, limit - at - 2))
+        answers = HINTS["confirm"]
+        room = limit - x - 2 - hints_width(answers) - 3
+        at = p.text(y, x + 2, question, "peach", bg, room, bold=True)
+        draw_hints(p, y, at + 3, limit - at - 3, answers, bg)
     elif view.notice and view.notice[2] > time.monotonic():
         p.text(y, x + 2, view.notice[0], view.notice[1], bg, limit - x - 2)
     else:
-        at = x + 2
         mode = "input" if view.prompt else "commands" if view.scope == COMMANDS else "panes"
-        for key, label in HINTS[mode]:
-            if at + text_width(key) + text_width(label) + 1 > limit:
-                break
-            at = p.text(y, at, key, "subtext0", bg, bold=True)
-            at = p.text(y, at + 1, label, "overlay1", bg) + 3
+        draw_hints(p, y, x + 2, limit - x - 2, HINTS[mode], bg)
 
 
 def draw_prompt(p, view, y, x, width, counter):
@@ -527,7 +549,10 @@ def draw_results(p, view, rows, top, bottom, x, width, now, wall, selected_bg):
     if not rows:
         title, hint = EMPTY[SCOPE_KINDS[view.scope]]
         if view.search:
-            title, hint = f"No matches for “{view.search}”", "Try fewer letters, or ⇥ to another tab."
+            # Say where else it matched; All only repeats Agents and Terminals.
+            elsewhere = [f"{SCOPES[i]} ({count})" for i, count in enumerate(view.counts()) if i and count]
+            title = f"No matches for “{view.search}”"
+            hint = f"Found in {', '.join(elsewhere)} · ⇥ to switch" if elsewhere else "Try fewer letters."
         p.text(top + 1, x + 4, title, "overlay1", "sidebar_bg", width=width - 6, bold=True)
         p.text(top + 2, x + 4, hint, "overlay0", "sidebar_bg", width=width - 6)
 

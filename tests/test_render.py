@@ -144,3 +144,34 @@ class RenderTests(unittest.TestCase):
         self.assertIn("No agents running", frame.text())
         frame, _ = self.draw(30, 150, query="zzz")
         self.assertIn("No matches for “zzz”", frame.text())
+
+    def test_only_other_machines_are_named(self):
+        remote = inventory.entries(snapshot(), {"id": "gpu", "label": "gpu-box"})[:1]
+        frame, _ = self.draw(30, 160, inventory.entries(snapshot()) + remote)
+        text = frame.text()
+        self.assertNotIn("Local", text, "this machine's panes need no label")
+        self.assertRegex(text, r"Awaiting approval +gpu-box +opencode", "a remote pane names its machine")
+        frame, _ = self.draw(30, 160, remote)
+        self.assertIn("opencode  ·  gpu-box  ·  Project Alpha:1", frame.text(), "and so does its preview")
+
+    def test_footer_keeps_the_most_needed_keys_and_answers(self):
+        frame, _ = self.draw(24, 40, preview=False)
+        footer = frame.text().split("\n")[-1]
+        self.assertIn("↵ go", footer)
+        self.assertIn("esc quit", footer, "dropped last, though listed last")
+        self.assertNotIn("scroll", footer, "dropped first")
+        entries = inventory.entries(snapshot())
+        frame, _ = self.draw(24, 60, entries, preview=False, selected=entries[0]["id"], confirm=entries[0]["id"])
+        footer = frame.text().split("\n")[-1]
+        self.assertIn("y confirm   esc cancel", footer, "the answers always show")
+        self.assertIn("Close opencode in Project", footer)
+
+    def test_a_search_that_matches_another_tab_says_which(self):
+        frame, _ = self.draw(30, 150, scope=1, query="nvim")
+        self.assertIn("Found in Terminals (1) · ⇥ to switch", frame.text())
+
+    def test_folders_keep_their_end_when_cut(self):
+        entries = inventory.entries(snapshot())
+        entries[3]["cwd"] = "/srv/a/very/long/path/to/the/project/alpha"
+        frame, _ = self.draw(30, 80, entries, preview=False)
+        self.assertRegex(frame.text(), r"› nvim  …[a-z/]*/project/alpha ")

@@ -51,6 +51,7 @@ def text_width(text):
 
 
 def clip(text, width, ellipsis="…"):
+    """`text` cut to `width` cells, ending in an ellipsis if it had to be cut."""
     if width <= 0:
         return ""
     if text_width(text) <= width:
@@ -65,6 +66,17 @@ def clip(text, width, ellipsis="…"):
         result.append(char)
         used += size
     return "".join(result) + ellipsis
+
+
+def clip_start(text, width, ellipsis="…"):
+    """`text` cut to `width` cells from the start, keeping its end, as paths read best: …/web/src."""
+    if width <= 0:
+        return ""
+    if text_width(text) <= width:
+        return text
+    if text.isascii():
+        return ellipsis + text[len(text) - width + len(ellipsis) :]
+    return ellipsis + clip(text[::-1], width - len(ellipsis), "")[::-1]
 
 
 def first_difference(a, b):
