@@ -1,0 +1,4 @@
+# Formatting-only commits, skipped by `git blame` (see `blame.ignoreRevsFile`).
+
+# style: format with ruff format
+a3486ad6bdcdf91d2241a299caf113184b64c685
