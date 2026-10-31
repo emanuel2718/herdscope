@@ -143,3 +143,14 @@ class AppTests(unittest.TestCase):
         result, transcript = self.run_picker([b"\r", b"\x1b"], focus_error="That pane was replaced")
         self.assertIsNone(result)
         self.assertIn(b"That pane was replaced", transcript)
+
+
+class WaitTests(unittest.TestCase):
+    def test_the_loop_sleeps_until_the_screen_would_change(self):
+        view = app.View()
+        view.hits = {"animated": True}
+        self.assertLess(app.wait(view, 10.03), 0.1, "the next spinner frame")
+        view.hits = {"animated": False}
+        self.assertEqual(app.wait(view, 10), app.IDLE)
+        view.notice = ("Closed nvim", "overlay1", 10.5)
+        self.assertAlmostEqual(app.wait(view, 10), 0.51, places=5, msg="when the notice runs out")

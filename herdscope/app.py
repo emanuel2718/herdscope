@@ -12,6 +12,7 @@ from herdscope.view import View, handle
 PREVIEWS = 32  # Panes whose latest preview is kept, for flicking back to without a wait.
 LOCAL_CADENCE = 0.25  # Seconds between reads of a local pane's preview.
 REMOTE_CADENCE = 3  # The same for a pane on another machine, a herdr process and an SSH session each.
+IDLE = 1  # Seconds the loop sleeps when nothing on screen moves by itself.
 
 
 class Previewer:
@@ -130,8 +131,7 @@ def loop(panes, screen, palette, view, previewer, catalog):
         render.draw(screen, palette, view, entries, rows, now, previewer, view.loading)
         screen.refresh()
         try:
-            # Spinners advance every 0.1 s: wake for the next frame, not sooner.
-            event = screen.event(0.1 - now % 0.1 + 0.002 if view.hits.get("animated") else 0.25)
+            event = screen.event(wait(view, now))
         except EOFError:
             return
         if not event:
@@ -174,6 +174,19 @@ def loop(panes, screen, palette, view, previewer, catalog):
             if entry.get("machine_id"):
                 remote_focused(screen, palette, view.current().fields["label"], entry["machine"])
             return
+
+
+def wait(view, now):
+    """How long the loop may sleep before the screen changes by itself, if no input comes.
+
+    Spinners advance every 0.1 s, so while one shows the loop wakes for its next frame. Otherwise
+    only a notice running out, or a status time ticking over a minute, changes what's drawn.
+    """
+    if view.hits.get("animated"):
+        return 0.1 - now % 0.1 + 0.002
+    if view.notice and view.notice[2] > now:
+        return min(IDLE, view.notice[2] - now + 0.01)
+    return IDLE
 
 
 def remote_focused(screen, palette, label, machine):
