@@ -4,7 +4,7 @@ import threading
 import time
 from contextlib import suppress
 
-from herdscope import commands, herdr, inventory, render, theme
+from herdscope import commands, fuzzy, herdr, inventory, render, theme
 from herdscope.render import Palette
 from herdscope.terminal import Style, Terminal, parse_ansi
 from herdscope.view import View, handle
@@ -125,6 +125,7 @@ def run(panes):
 
 def loop(panes, screen, palette, view, previewer, catalog):
     """Draw, wait for input and act, until the popup should close."""
+    warming = None
     while True:
         now = time.monotonic()
         version, entries = panes.current()
@@ -134,6 +135,10 @@ def loop(panes, screen, palette, view, previewer, catalog):
             view.confirm = None  # What was asked about is gone: nothing left to confirm.
         render.draw(screen, palette, view, entries, rows, now, previewer, view.loading)
         screen.refresh()
+        if warming is None:
+            # With the first frame up, ready every pane for matching while the user reads it.
+            warming = threading.Thread(target=fuzzy.warm, args=([item.text for item in view.items[1]],), daemon=True)
+            warming.start()
         try:
             event = screen.event(wait(view, now))
         except EOFError:

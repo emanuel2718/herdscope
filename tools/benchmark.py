@@ -59,6 +59,7 @@ def measure(count):
             return (time.perf_counter() - began) * 1000
 
         first = frame(1, entries)
+        fuzzy.warm([item.text for item in view.items[1]])  # As the picker does once its first frame is up.
         typing = []
         for query in TYPED:
             view.query, view.cursor = query, len(query)

@@ -69,11 +69,12 @@ class Classes(dict):
 
 CLASSES = Classes()
 BONUS = {(previous, current): bonus_for(previous, current) for previous in range(7) for current in range(7)}
+CACHED = 1 << 15  # Texts whose bonuses and folded forms are kept: more than any herd has panes.
 # The same, indexed by one byte: the previous character's class times 8, plus the current one's.
 PAIR_BONUS = bytes(BONUS.get((pair >> 3, pair & 7), 0) for pair in range(256))
 
 
-@lru_cache(maxsize=1 << 15)
+@lru_cache(maxsize=CACHED)
 def bonuses(text):
     """The bonus for a match at each position of `text`, which depends on the text alone.
 
@@ -383,7 +384,7 @@ def match_term(term, text, haystacks, scoring=False):
     return found[0] if scoring and found else found
 
 
-@lru_cache(maxsize=1 << 15)
+@lru_cache(maxsize=CACHED)
 def haystacks(text):
     """The forms of `text` a term may match: as-is, lowercased, unaccented, and both."""
     if text.isascii():  # Most text: no accents to strip, and lowercasing keeps every position.
@@ -449,12 +450,23 @@ class Query:
         self.scores = {}
         kept = previous.terms if previous else {}
         self.terms = {term: kept.get(term, {}) for terms in self.sets for term in terms}
+        # Most queries are one fuzzy term, which needs none of the bookkeeping for several.
+        only = self.sets[0][0] if len(self.sets) == 1 and len(self.sets[0]) == 1 else None
+        self.only = only if only and only[0] == FUZZY and not only[1] else None
 
     def __bool__(self):
         return bool(self.sets)
 
     def score(self, text):
         """The text's score with fzf's extendedMatch semantics, or None if it doesn't match."""
+        if self.only:
+            cache = self.terms[self.only]
+            found = cache.get(text, MISSING)
+            if found is MISSING:
+                if len(cache) > FORGET:
+                    cache.clear()
+                found = cache[text] = match_term(self.only, text, haystacks(text), scoring=True)
+            return found
         score = self.scores.get(text, MISSING)
         if score is not MISSING:
             return score
@@ -499,6 +511,17 @@ class Query:
             if not matched:
                 return None
         return total, sorted(positions)
+
+
+def warm(texts):
+    """Work out what matching needs from each text, ahead of the first query that needs it.
+
+    The picker runs this in the background as it opens, so the first keystrokes find every
+    pane's bonuses and folded forms ready.
+    """
+    for text in texts[:CACHED]:
+        bonuses(text)
+        haystacks(text)
 
 
 def rank(items, query, text=lambda item: item):

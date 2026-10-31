@@ -83,6 +83,17 @@ class FuzzyTests(unittest.TestCase):
             full = fuzzy.fuzzy(text, folded, pattern)
             self.assertEqual(fuzzy.fuzzy_score(text, folded, pattern), full and full[0], (text, pattern))
 
+    def test_a_query_scores_as_its_full_match_does(self):
+        # Scoring takes shortcuts, the commonest query (one fuzzy term) most of all; matching
+        # for highlights doesn't. They must agree on every text and query.
+        rng = random.Random(5)
+        words = ["rana", "vue", "'rana", "^nvim", "rana$", "!vue", "|", "abc", "B", "café", "e"]
+        for _ in range(3000):
+            query = " ".join(rng.sample(words, rng.randint(1, 3)))
+            for text in self.TEXTS:
+                full = fuzzy.Query(query).match(text)
+                self.assertEqual(fuzzy.Query(query).score(text), full and full[0], (query, text))
+
     def test_highlights_the_best_alignment_not_the_leftmost(self):
         text = self.TEXTS[0]
         score, positions = fuzzy.Query("rana vue").match(text)

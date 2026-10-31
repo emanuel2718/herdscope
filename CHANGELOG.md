@@ -32,7 +32,7 @@ The first release.
 ### Performance
 
 - The popup draws its first frame about 45 ms after the key press, most of it Python starting.
-- With 1,000 panes a keystroke takes about 3 ms; with 10,000, about 25 ms.
+- With 1,000 panes a keystroke takes about 3 ms; with 10,000, about 21 ms.
 - With the popup closed, only two small hooks run: a few lines of `sh` per agent status change,
   and a short Python script per pane focus.
 
