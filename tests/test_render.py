@@ -175,3 +175,18 @@ class RenderTests(unittest.TestCase):
         entries[3]["cwd"] = "/srv/a/very/long/path/to/the/project/alpha"
         frame, _ = self.draw(30, 80, entries, preview=False)
         self.assertRegex(frame.text(), r"› nvim  …[a-z/]*/project/alpha ")
+
+    def test_question_mark_on_an_empty_search_opens_the_help(self):
+        frame, view = self.draw(36, 150)
+        self.assertIn("? help", frame.text().split("\n")[-1])
+        handle(view, ("text", "?"), 0)
+        frame, view = self.draw(36, 150, help=True)
+        self.assertIn("exact word", frame.text(), "keys and the search syntax")
+        self.assertIsNone(handle(view, ("key", "enter"), 0), "a key closes the help and does nothing else")
+        self.assertFalse(view.help)
+        frame, _ = self.draw(20, 90, help=True)
+        self.assertIn("close the pane", frame.text())
+        self.assertNotIn("exact word", frame.text(), "a short popup shows only the keys")
+        view.query, view.cursor = "why", 3
+        handle(view, ("text", "?"), 0)
+        self.assertEqual((view.query, view.help), ("why?", False), "after other text, ? is just text")

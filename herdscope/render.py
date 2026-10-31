@@ -33,9 +33,10 @@ HINTS = {
         ("⇥", "scope", 3),
         (">", "commands", 2),
         ("^/", "preview", 5),
-        ("⇧↑↓", "scroll", 6),
+        ("⇧↑↓", "scroll", 7),
         ("^x", "close", 4),
         ("esc", "quit", 1),
+        ("?", "help", 6),
     ),
     "commands": (("↵", "run", 0), ("⇥", "scope", 2), ("⌫", "back to panes", 3), ("esc", "quit", 1)),
     "input": (("↵", "apply", 0), ("esc", "back", 1), ("^u", "clear", 2)),
@@ -622,6 +623,55 @@ def draw(canvas, palette, view, entries, rows, now, previewer, loading=False, wa
                 previewing = item.entry["kind"] != "error"
     if not previewing:
         previewer.idle()  # Nothing on screen shows a pane's output, so stop reading it.
+    if view.help:
+        draw_help(p, height, width)
+
+
+# The help overlay: two columns of (keys, what they do), then the search syntax.
+HELP_KEYS = (
+    ("↵  ^y", "go to the pane, or run the command"),
+    ("↑ ↓  ^n ^p", "move; PgUp PgDn by a page"),
+    ("⇥  ⇧⇥", "switch between All, Agents, Terminals, Commands"),
+    (">", "search commands; ⌫ on an empty search goes back"),
+    ("^/", "show or hide the preview"),
+    ("⇧↑ ⇧↓  wheel", "scroll back through the preview"),
+    ("^x  then y", "close the pane"),
+    ("^a ^e ^w ^u", "edit the search like a shell prompt"),
+    ("esc  ^c", "quit, or leave a command's input"),
+)
+HELP_SYNTAX = (
+    ("sbtrkt", "fuzzy"),
+    ("'wild", "exact"),
+    ("'wild'", "exact word"),
+    ("^music", "starts with"),
+    (".mp3$", "ends with"),
+    ("!fire", "excludes"),
+    ("a | b", "either"),
+    ("Abc", "an uppercase letter makes a term case-sensitive"),
+)
+
+
+def draw_help(p, height, width):
+    """Every key and the search syntax, in a box over the picker; any key closes it."""
+    sections = (("Keys", HELP_KEYS), ("Search", HELP_SYNTAX))
+    if sum(len(rows) + 2 for _, rows in sections) + 3 > height:
+        sections = sections[:1]  # A short popup shows the keys; the search syntax is in the README.
+    keys = max(text_width(key) for _, rows in sections for key, _ in rows) + 3
+    inner = min(width - 4, keys + max(text_width(text) for _, rows in sections for _, text in rows) + 4)
+    lines = sum(len(rows) + 2 for _, rows in sections) + 1
+    top, left = max(0, (height - lines - 2) // 2), max(0, (width - inner) // 2)
+    for y in range(top, min(height, top + lines + 2)):
+        p.fill(y, left, inner, "surface0")
+    y = top + 1
+    for title, rows in sections:
+        p.text(y, left + 2, title, "accent", "surface0", inner - 4, bold=True)
+        y += 1
+        for key, text in rows:
+            p.text(y, left + 2, key, "text", "surface0", keys, bold=True)
+            p.text(y, left + 2 + keys, text, "subtext0", "surface0", max(0, inner - 4 - keys))
+            y += 1
+        y += 1
+    p.text(y, left + 2, "Press any key to close", "overlay1", "surface0", inner - 4, italic=True)
 
 
 def draw_message(canvas, palette, lines):

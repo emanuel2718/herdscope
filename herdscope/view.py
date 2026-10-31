@@ -85,6 +85,7 @@ class View:
         self.index = 0
         self.offset = 0
         self.preview = True
+        self.help = False
         self.preview_scroll = 0
         self.confirm = None
         self.closing = None
@@ -276,6 +277,10 @@ class View:
 def handle(view, event, now):
     """Update the view for one input event; returns "quit", "accept", "close", "run" or None."""
     kind, value = event
+    if view.help:
+        # Any key or click closes the help, and does nothing else.
+        view.help = kind == "mouse" and not value[3]
+        return None
     if view.prompt:
         return answer(view, event)
     if view.confirm:
@@ -294,6 +299,9 @@ def handle(view, event, now):
         return mouse(view, value, now)
     if kind in ("text", "paste"):
         text = " ".join(value.split()) if kind == "paste" else value
+        if text == "?" and not view.query:
+            view.help = True  # Like ">" for commands: on an empty search, "?" opens the help.
+            return None
         if text.startswith(">") and not view.query and view.scope != COMMANDS:
             # ">" opens Commands and becomes the prompt symbol instead of part of the query.
             view.back, view.scope, text = view.scope, COMMANDS, text[1:]
@@ -321,6 +329,8 @@ def handle(view, event, now):
         view.move(view.page if value == "pgdn" else -view.page)
     elif value in ("tab", "shift-tab"):
         view.scope = (view.scope + (1 if value == "tab" else -1)) % len(SCOPES)
+    elif value == "f1":
+        view.help = True
     elif value in ("ctrl-/", "alt-p"):
         view.preview = not view.preview
     elif value in ("shift-up", "shift-down", "shift-pgup", "shift-pgdn"):
