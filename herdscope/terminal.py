@@ -15,7 +15,7 @@ from typing import NamedTuple
 
 
 class Style(NamedTuple):
-    fg: object = None      # "#rrggbb", palette index, or None for the terminal default
+    fg: object = None  # "#rrggbb", palette index, or None for the terminal default
     bg: object = None
     bold: bool = False
     dim: bool = False
@@ -32,7 +32,7 @@ def color_codes(value, layer):
         if value < 16:
             return [str(layer + 44 + value)]
         return [str(layer), "5", str(value)]
-    return [str(layer), "2", *(str(int(value[i:i + 2], 16)) for i in (1, 3, 5))]
+    return [str(layer), "2", *(str(int(value[i : i + 2], 16)) for i in (1, 3, 5))]
 
 
 @lru_cache(maxsize=4096)
@@ -61,7 +61,7 @@ def clip(text, width, ellipsis="…"):
     if text_width(text) <= width:
         return text
     if text.isascii():
-        return text[:width - len(ellipsis)] + ellipsis
+        return text[: width - len(ellipsis)] + ellipsis
     result, used = [], 0
     for char in text:
         size = char_width(char)
@@ -79,7 +79,7 @@ def first_difference(a, b):
     low, high = 0, len(a) - 1
     while low < high:
         middle = (low + high) // 2
-        if a[low:middle + 1] == b[low:middle + 1]:
+        if a[low : middle + 1] == b[low : middle + 1]:
             low = middle + 1
         else:
             high = middle
@@ -114,7 +114,7 @@ class Canvas:
             if end > x:
                 if row[x][0] == "" and x > 0:
                     row[x - 1] = (" ", row[x - 1][1])
-                row[x:end] = [(char, style) for char in text[:end - x]]
+                row[x:end] = [(char, style) for char in text[: end - x]]
                 if end < self.width and row[end][0] == "":
                     row[end] = (" ", row[end][1])
             return end
@@ -184,7 +184,7 @@ def apply_sgr(state, params, base):
             continue
         code = int(part) if part.isdigit() else 0
         if code in (38, 48):
-            value, used = extended_color(parts[i + 1:])
+            value, used = extended_color(parts[i + 1 :])
             if value is not None:
                 fg, bg = (value, bg) if code == 38 else (fg, value)
             i += used
@@ -192,7 +192,12 @@ def apply_sgr(state, params, base):
             fg, bg, bold, dim, italic, underline, reverse = base.fg, base.bg, False, False, False, False, False
         elif code in (1, 2, 3, 4, 7):
             bold, dim, italic, underline, reverse = (
-                bold or code == 1, dim or code == 2, italic or code == 3, underline or code == 4, reverse or code == 7)
+                bold or code == 1,
+                dim or code == 2,
+                italic or code == 3,
+                underline or code == 4,
+                reverse or code == 7,
+            )
         elif code == 22:
             bold = dim = False
         elif code == 23:
@@ -220,7 +225,7 @@ def parse_ansi(text, base):
     for raw in text.split("\n"):
         runs, column, position = [], 0, 0
         for match in [*ESCAPE.finditer(raw), None]:
-            chunk = raw[position:match.start() if match else len(raw)]
+            chunk = raw[position : match.start() if match else len(raw)]
             if chunk:
                 cleaned = []
                 for char in chunk:
@@ -254,10 +259,27 @@ def parse_ansi(text, base):
 CSI = re.compile(r"\x1b\[([0-?]*)([ -/]*)([@-~])")
 CURSOR = {"A": "up", "B": "down", "C": "right", "D": "left", "H": "home", "F": "end"}
 TILDE = {"1": "home", "7": "home", "4": "end", "8": "end", "2": "insert", "3": "delete", "5": "pgup", "6": "pgdn"}
-MODIFIERS = {2: "shift-", 3: "alt-", 4: "alt-shift-", 5: "ctrl-", 6: "ctrl-shift-", 7: "ctrl-alt-",
-             8: "ctrl-alt-shift-"}
-CONTROL = {"\r": "enter", "\n": "ctrl-j", "\t": "tab", "\x7f": "backspace", "\x08": "backspace",
-           "\x00": "ctrl-space", "\x1c": "ctrl-\\", "\x1d": "ctrl-]", "\x1e": "ctrl-^", "\x1f": "ctrl-/"}
+MODIFIERS = {
+    2: "shift-",
+    3: "alt-",
+    4: "alt-shift-",
+    5: "ctrl-",
+    6: "ctrl-shift-",
+    7: "ctrl-alt-",
+    8: "ctrl-alt-shift-",
+}
+CONTROL = {
+    "\r": "enter",
+    "\n": "ctrl-j",
+    "\t": "tab",
+    "\x7f": "backspace",
+    "\x08": "backspace",
+    "\x00": "ctrl-space",
+    "\x1c": "ctrl-\\",
+    "\x1d": "ctrl-]",
+    "\x1e": "ctrl-^",
+    "\x1f": "ctrl-/",
+}
 PASTE_START, PASTE_END = "\x1b[200~", "\x1b[201~"
 OSC_END = re.compile(r"\x07|\x1b\\")
 # Replies to color queries (OSC 10/11) and to the device-attributes fence (DA1).
@@ -309,7 +331,7 @@ def parse_input(buffer, final=False):
         end = buffer.find(PASTE_END)
         if end < 0:
             return None, 0
-        return ("paste", buffer[len(PASTE_START):end]), end + len(PASTE_END)
+        return ("paste", buffer[len(PASTE_START) : end]), end + len(PASTE_END)
     if char == "\x1b":
         if len(buffer) == 1 or (buffer[1] in "[O" and len(buffer) == 2):
             return (("key", "esc"), 1) if final else (None, 0)
@@ -411,7 +433,7 @@ class Terminal(Canvas):
     def write(self, text):
         data = text.encode()
         while data:
-            data = data[os.write(self.output, data):]
+            data = data[os.write(self.output, data) :]
 
     def getmaxyx(self):
         size = os.get_terminal_size(self.output)
@@ -479,7 +501,7 @@ class Terminal(Canvas):
                     event, used = parse_input(self.pending, final=True)
                 elif self.incomplete and time.monotonic() - self.incomplete > 1:
                     # The paste's end marker never came: deliver what arrived.
-                    event, used = ("paste", self.pending[len(PASTE_START):]), len(self.pending)
+                    event, used = ("paste", self.pending[len(PASTE_START) :]), len(self.pending)
                 if used == 0:
                     self.incomplete = self.incomplete or time.monotonic()
                     return None

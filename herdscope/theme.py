@@ -13,15 +13,34 @@ from pathlib import Path
 
 # Herdr's token names. The picker draws with a subset; keeping all of them means any
 # [theme.custom] override written for Herdr applies here unchanged.
-TOKENS = ("panel_bg", "sidebar_bg", "active_row_bg", "selection_bg", "surface0", "surface1", "surface_dim",
-          "overlay0", "overlay1", "text", "subtext0", "mauve", "green", "yellow", "red", "blue", "teal", "peach",
-          "accent")
+TOKENS = (
+    "panel_bg",
+    "sidebar_bg",
+    "active_row_bg",
+    "selection_bg",
+    "surface0",
+    "surface1",
+    "surface_dim",
+    "overlay0",
+    "overlay1",
+    "text",
+    "subtext0",
+    "mauve",
+    "green",
+    "yellow",
+    "red",
+    "blue",
+    "teal",
+    "peach",
+    "accent",
+)
 
 
 def palette(*colors):
     return dict(zip(TOKENS, colors))
 
 
+# fmt: off
 THEMES = {
     "catppuccin": palette("#1e1e2e", "#181825", "#1e1e2e", "#313244", "#313244", "#45475a", "#11111b", "#6c7086",
                           "#7f849c", "#cdd6f4", "#a6adc8", "#cba6f7", "#a6e3a1", "#f9e2af", "#f38ba8", "#89b4fa",
@@ -76,11 +95,29 @@ THEMES = {
                               "#9893a5", "#797593", "#575279", "#797593", "#907aa9", "#286983", "#ea9d34",
                               "#b4637a", "#56949f", "#d7827e", "#d7827e", "#907aa9"),
 }
+# fmt: on
 
 # Named colors follow ratatui's names, so they render with the terminal's palette as in Herdr.
-NAMED = {"black": 0, "red": 1, "green": 2, "yellow": 3, "blue": 4, "magenta": 5, "cyan": 6, "gray": 7,
-         "grey": 7, "darkgray": 8, "darkgrey": 8, "lightred": 9, "lightgreen": 10, "lightyellow": 11,
-         "lightblue": 12, "lightmagenta": 13, "lightcyan": 14, "white": 15}
+NAMED = {
+    "black": 0,
+    "red": 1,
+    "green": 2,
+    "yellow": 3,
+    "blue": 4,
+    "magenta": 5,
+    "cyan": 6,
+    "gray": 7,
+    "grey": 7,
+    "darkgray": 8,
+    "darkgrey": 8,
+    "lightred": 9,
+    "lightgreen": 10,
+    "lightyellow": 11,
+    "lightblue": 12,
+    "lightmagenta": 13,
+    "lightcyan": 14,
+    "white": 15,
+}
 
 
 def color(value, fallback):
@@ -104,13 +141,14 @@ def color(value, fallback):
 def dark_appearance(terminal=None):
     """Whether to use the dark theme: the terminal's own background decides when it was reported."""
     if terminal:
-        red, green, blue = (int(terminal[1][i:i + 2], 16) for i in (1, 3, 5))
+        red, green, blue = (int(terminal[1][i : i + 2], 16) for i in (1, 3, 5))
         return 0.2126 * red + 0.7152 * green + 0.0722 * blue < 128
     if os.uname().sysname != "Darwin":
         return True
     try:
-        result = subprocess.run(["defaults", "read", "-g", "AppleInterfaceStyle"],
-                                capture_output=True, text=True, timeout=1)
+        result = subprocess.run(
+            ["defaults", "read", "-g", "AppleInterfaceStyle"], capture_output=True, text=True, timeout=1
+        )
     except (OSError, subprocess.SubprocessError):
         return True
     return "dark" in result.stdout.lower()
@@ -118,8 +156,10 @@ def dark_appearance(terminal=None):
 
 def config():
     """Herdr's config, found the way Herdr finds it."""
-    path = Path(os.environ.get("HERDR_CONFIG_PATH") or
-                Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "herdr/config.toml")
+    path = Path(
+        os.environ.get("HERDR_CONFIG_PATH")
+        or Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "herdr/config.toml"
+    )
     try:
         return tomllib.loads(path.read_text())
     except (OSError, ValueError):
@@ -128,7 +168,7 @@ def config():
 
 def blend(base, other, amount):
     """`amount` of `other` mixed into `base`, both "#rrggbb"."""
-    a, b = ([int(c[i:i + 2], 16) for i in (1, 3, 5)] for c in (base, other))
+    a, b = ([int(c[i : i + 2], 16) for i in (1, 3, 5)] for c in (base, other))
     return "#" + "".join(f"{round(x + (y - x) * amount):02x}" for x, y in zip(a, b))
 
 
@@ -140,18 +180,48 @@ def from_terminal(colors=None):
     preview panel and the greys are mixed from them. Without them only the palette is
     known, and the panels share the default background.
     """
-    tokens = {"text": None, "sidebar_bg": None, "surface_dim": None, "red": 1, "green": 2, "yellow": 3, "blue": 4,
-              "mauve": 5, "teal": 6, "peach": 3}
+    tokens = {
+        "text": None,
+        "sidebar_bg": None,
+        "surface_dim": None,
+        "red": 1,
+        "green": 2,
+        "yellow": 3,
+        "blue": 4,
+        "mauve": 5,
+        "teal": 6,
+        "peach": 3,
+    }
     if colors:
         fg, bg = colors
-        tokens.update({name: blend(bg, fg, amount) for name, amount in (
-            ("panel_bg", .07), ("active_row_bg", .07), ("selection_bg", .12), ("surface0", .16), ("surface1", .26),
-            ("overlay0", .42), ("overlay1", .58), ("subtext0", .8))})
+        tokens.update(
+            {
+                name: blend(bg, fg, amount)
+                for name, amount in (
+                    ("panel_bg", 0.07),
+                    ("active_row_bg", 0.07),
+                    ("selection_bg", 0.12),
+                    ("surface0", 0.16),
+                    ("surface1", 0.26),
+                    ("overlay0", 0.42),
+                    ("overlay1", 0.58),
+                    ("subtext0", 0.8),
+                )
+            }
+        )
     else:
         # Only the defaults are safe: palette greys can equal the background (Solarized's color 8 does),
         # so secondary text is the terminal's own text, dimmed.
-        tokens.update(panel_bg=None, active_row_bg=None, selection_bg=None, surface0="dim", surface1="dim",
-                      overlay0="dim", overlay1="dim", subtext0=None)
+        tokens.update(
+            panel_bg=None,
+            active_row_bg=None,
+            selection_bg=None,
+            surface0="dim",
+            surface1="dim",
+            overlay0="dim",
+            overlay1="dim",
+            subtext0=None,
+        )
     return tokens
 
 

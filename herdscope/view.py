@@ -35,14 +35,23 @@ class Item:
         if entry["kind"] == "error":
             values = {"label": entry["machine"], "status": entry["status"], "path": entry["error"]}
         elif entry["kind"] == "command":
-            values = {"label": entry["title"], "category": entry["category"], "target": entry["target"],
-                      "aliases": entry["aliases"]}
+            values = {
+                "label": entry["title"],
+                "category": entry["category"],
+                "target": entry["target"],
+                "aliases": entry["aliases"],
+            }
         else:
             label, detail = inventory.labels(entry)
-            values = {"label": label, "detail": detail, "place": f"{entry['workspace']}:{entry['tab']}",
-                      "agent": entry["agent"], "status": entry["status"],
-                      "path": inventory.display_path(entry) if entry["kind"] == "agent" else "",
-                      "machine": entry["machine"]}
+            values = {
+                "label": label,
+                "detail": detail,
+                "place": f"{entry['workspace']}:{entry['tab']}",
+                "agent": entry["agent"],
+                "status": entry["status"],
+                "path": inventory.display_path(entry) if entry["kind"] == "agent" else "",
+                "machine": entry["machine"],
+            }
         self.fields, self.spans, parts, at = values, {}, [], 0
         # One search line, as fzf sees it; spans map match positions back to fields.
         for name in FIELDS:
@@ -103,8 +112,10 @@ class View:
         if self.items[0] != version:
             # A refresh rebuilds only the items of panes that changed.
             old = {item.entry["id"]: item for item in self.items[1]}
-            self.items = (version, [item if (item := old.get(entry["id"])) and item.entry == entry else Item(entry)
-                                    for entry in entries])
+            self.items = (
+                version,
+                [item if (item := old.get(entry["id"])) and item.entry == entry else Item(entry) for entry in entries],
+            )
             self.totals = [sum(shows(kind, entry) for entry in entries) for kind in SCOPE_KINDS]
             self.loading = any(entry.get("status") == "connecting" or entry.get("stale") for entry in entries)
         query = self.search
@@ -141,8 +152,10 @@ class View:
             candidates = [item for item in candidates if id(item) in kept]
         if self.compiled.text != query:
             self.compiled = fuzzy.Query(query, self.compiled)
-        return [(item, item.highlights(positions))
-                for item, positions in fuzzy.rank(candidates, self.compiled, lambda i: i.text)]
+        return [
+            (item, item.highlights(positions))
+            for item, positions in fuzzy.rank(candidates, self.compiled, lambda i: i.text)
+        ]
 
     def spaced(self):
         """Row indexes to draw, with None for a blank line between kinds while browsing everything."""
@@ -210,9 +223,9 @@ class View:
         elif name in ("alt-f", "ctrl-right", "alt-right"):
             cursor = word_end
         elif name == "backspace":
-            query, cursor = query[:max(0, cursor - 1)] + query[cursor:], max(0, cursor - 1)
+            query, cursor = query[: max(0, cursor - 1)] + query[cursor:], max(0, cursor - 1)
         elif name in ("delete", "ctrl-d"):
-            query = left + query[cursor + 1:]
+            query = left + query[cursor + 1 :]
         elif name == "ctrl-u":
             query, cursor = query[cursor:], 0
         elif name in ("ctrl-w", "alt-backspace"):
@@ -226,6 +239,7 @@ class View:
 
 
 # Input ---------------------------------------------------------------------------------------
+
 
 def handle(view, event, now):
     """Update the view for one input event; returns "quit", "accept", "close", "run" or None."""

@@ -34,6 +34,7 @@ def local_scope():
 
 # Visits ------------------------------------------------------------------------------------
 
+
 @contextmanager
 def database():
     herdr.STATE.mkdir(parents=True, exist_ok=True)
@@ -72,6 +73,7 @@ def visits():
 
 
 # Status times ------------------------------------------------------------------------------
+
 
 def status_dir():
     """Where record-status.sh keeps a file per local pane: its agent's status, written when that began.
@@ -150,6 +152,7 @@ def prune(snapshot, before):
 
 
 # The pane.focused hook ---------------------------------------------------------------------
+
 
 def record_visit():
     """Count the visit Herdr reported, and now and then tidy record-status.sh's files.

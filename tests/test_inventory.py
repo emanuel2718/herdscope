@@ -17,10 +17,13 @@ class InventoryTests(StateTestCase):
         frequent = copy.deepcopy(items[1])
         frequent.update(id="another", key="frequent")
         scores = {items[2]["key"]: (10000, 0), frequent["key"]: (10, 0)}
-        ordered = sorted([items[4], items[3], items[2], items[1], frequent, items[0]],
-                         key=lambda e: inventory.rank(e, scores))
-        self.assertEqual([e["id"] for e in ordered],
-                         [items[0]["id"], "another", items[1]["id"], items[2]["id"], items[3]["id"], items[4]["id"]])
+        ordered = sorted(
+            [items[4], items[3], items[2], items[1], frequent, items[0]], key=lambda e: inventory.rank(e, scores)
+        )
+        self.assertEqual(
+            [e["id"] for e in ordered],
+            [items[0]["id"], "another", items[1]["id"], items[2]["id"], items[3]["id"], items[4]["id"]],
+        )
         self.assertTrue(items[4]["current"])
 
     def test_machine_session_identity_and_pane_moves(self):
@@ -36,11 +39,13 @@ class InventoryTests(StateTestCase):
 
     def test_refresh_survives_unexpected_errors(self):
         replies = iter([{"snapshot": snapshot()}])
+
         def rpc(method, params=None):
             reply = next(replies, None)
             if reply is None:
                 raise TypeError("odd reply")
             return reply
+
         with patch.object(herdr, "rpc", rpc):
             panes = inventory.Inventory()
             panes.poke()
@@ -72,8 +77,9 @@ class InventoryTests(StateTestCase):
         with patch.object(herdr, "rpc", return_value={"snapshot": snapshot()}), patch.object(herdr, "cli", cli):
             with inventory.Inventory() as panes:
                 deadline, expected = time.monotonic() + 5, {None} | {m["id"] for m in machines}
-                while time.monotonic() < deadline and expected != (loaded := {
-                        e["machine_id"] for e in panes.current()[1] if e["kind"] == "agent"}):
+                while time.monotonic() < deadline and expected != (
+                    loaded := {e["machine_id"] for e in panes.current()[1] if e["kind"] == "agent"}
+                ):
                     time.sleep(0.02)
         self.assertEqual(loaded, expected)
         self.assertLessEqual(peak, inventory.MACHINE_WORKERS)
@@ -118,8 +124,11 @@ class InventoryTests(StateTestCase):
                 fresh = wait_for(panes, lambda rows: rows and not rows[0].get("stale"))
         blocked = next(e for e in first if e["status"] == "blocked")
         self.assertIsNotNone(blocked["since"])
-        self.assertEqual(next(e for e in fresh if e["key"] == blocked["key"])["since"], blocked["since"],
-                         "a status that held keeps its time across openings")
+        self.assertEqual(
+            next(e for e in fresh if e["key"] == blocked["key"])["since"],
+            blocked["since"],
+            "a status that held keeps its time across openings",
+        )
 
     def test_idle_machines_are_asked_less_often(self):
         calls, machines = {"busy": 0, "idle": 0}, [{"id": "busy", "label": "Busy"}, {"id": "idle", "label": "Idle"}]
@@ -133,23 +142,31 @@ class InventoryTests(StateTestCase):
                 data["panes"][0]["terminal_title_stripped"] = f"Step {calls['busy']}"
             return {"snapshot": data}
 
-        with patch.object(herdr, "rpc", return_value={"snapshot": snapshot()}), patch.object(herdr, "cli", cli), \
-                patch.object(inventory, "MACHINE_INTERVAL", 0.02), patch.object(inventory, "MACHINE_RATE", 1000):
+        with (
+            patch.object(herdr, "rpc", return_value={"snapshot": snapshot()}),
+            patch.object(herdr, "cli", cli),
+            patch.object(inventory, "MACHINE_INTERVAL", 0.02),
+            patch.object(inventory, "MACHINE_RATE", 1000),
+        ):
             with inventory.Inventory():
                 time.sleep(0.8)
         self.assertGreater(calls["busy"], 2 * calls["idle"])
 
     def test_the_invoking_pane_is_where_the_popup_came_from(self):
-        with patch.object(herdr, "rpc", return_value={"snapshot": snapshot()}), \
-                patch.object(inventory, "ORIGIN", "w1:p7"):
+        with (
+            patch.object(herdr, "rpc", return_value={"snapshot": snapshot()}),
+            patch.object(inventory, "ORIGIN", "w1:p7"),
+        ):
             panes = inventory.Inventory()
         self.assertEqual(panes.snapshot["focused_pane_id"], "w1:p7", "not the other client's focus (w1:p8)")
         self.assertEqual([e["pane_id"] for e in panes.current()[1] if e["current"]], ["w1:p7"])
 
     def test_remote_focus_never_uses_local_ids(self):
         entry = inventory.entries(snapshot(), {"id": "remote-id", "label": "Remote", "session": "agents"})[0]
-        with patch.object(herdr, "cli", side_effect=[{"agent": {"terminal_id": "term-0"}}, {}]) as cli, \
-                patch.object(herdr, "rpc") as rpc:
+        with (
+            patch.object(herdr, "cli", side_effect=[{"agent": {"terminal_id": "term-0"}}, {}]) as cli,
+            patch.object(herdr, "rpc") as rpc,
+        ):
             inventory.focus(entry)
         rpc.assert_not_called()
         self.assertEqual(cli.call_args_list[0].args[0], ["--machine", "remote-id", "agent", "get", "w1:p0"])

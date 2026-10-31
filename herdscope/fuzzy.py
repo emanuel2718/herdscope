@@ -84,8 +84,11 @@ def bonuses(text):
 
 # Latin letters without their accents (é → e), as fzf normalizes them. Every item is matched
 # on every key press, so this is one str.translate rather than a Python loop per character.
-UNACCENTED = {code: base for code in (*range(0xC0, 0x250), *range(0x1E00, 0x1F00))
-              if (base := unicodedata.normalize("NFD", chr(code))[0]).isascii() and base != chr(code)}
+UNACCENTED = {
+    code: base
+    for code in (*range(0xC0, 0x250), *range(0x1E00, 0x1F00))
+    if (base := unicodedata.normalize("NFD", chr(code))[0]).isascii() and base != chr(code)
+}
 
 
 def normalize(text):
@@ -152,10 +155,10 @@ def fuzzy(text, folded, pattern):
     first = folded.find(pattern[0])
     last = folded.rfind(pattern[-1])
     low = max(0, first - 1)
-    chars = folded[low:last + 1]
+    chars = folded[low : last + 1]
     n = len(chars)
     # The bonus at `low` itself never counts: the first pattern char comes after it.
-    bonus_at = bonuses(text)[low:last + 1]
+    bonus_at = bonuses(text)[low : last + 1]
 
     # Phase 2: first-row scores and the earliest match of each pattern char. The loops below
     # run per character of every candidate, so they avoid calls and repeated indexing.
@@ -186,8 +189,8 @@ def fuzzy(text, folded, pattern):
     # Phase 3: fill the score matrix row by row (one row per pattern character).
     f0 = firsts[0]
     width = last_match - f0 + 1
-    h = h0[f0:last_match + 1] + [0] * (width * (m - 1))
-    c = c0[f0:last_match + 1] + [0] * (width * (m - 1))
+    h = h0[f0 : last_match + 1] + [0] * (width * (m - 1))
+    c = c0[f0 : last_match + 1] + [0] * (width * (m - 1))
     for index in range(1, m):
         # h[here + column] is this row's cell, h[diagonal + column] the one up and to the left.
         # Rows past the first start zeroed, so cells that don't match need no c write.
@@ -245,8 +248,10 @@ def exact(text, folded, pattern, boundary=False):
     at = folded.find(pattern)
     while at >= 0:
         end = at + len(pattern)
-        if not boundary or ((at == 0 or char_class(text[at - 1]) <= DELIMITER) and
-                            (end == len(text) or char_class(text[end]) <= DELIMITER)):
+        if not boundary or (
+            (at == 0 or char_class(text[at - 1]) <= DELIMITER)
+            and (end == len(text) or char_class(text[end]) <= DELIMITER)
+        ):
             bonus = bonus_for(char_class(text[at - 1]) if at else WHITE, char_class(text[at]))
             if bonus > best_bonus:
                 best, best_bonus = at, bonus

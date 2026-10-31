@@ -24,9 +24,13 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(found["new_workspace"]["binding"], "⌃S ⇧N", "Herdr's default, with the user's prefix")
 
     def test_commands_target_where_the_popup_was_opened(self):
-        found = catalog(actions=[{"plugin_id": "someone.notes", "action_id": "jot", "title": "Jot a note"},
-                                 {"plugin_id": herdr.PLUGIN, "action_id": "open", "title": "Herdscope"}],
-                        agents=("claude",))
+        found = catalog(
+            actions=[
+                {"plugin_id": "someone.notes", "action_id": "jot", "title": "Jot a note"},
+                {"plugin_id": herdr.PLUGIN, "action_id": "open", "title": "Herdscope"},
+            ],
+            agents=("claude",),
+        )
         self.assertEqual(found["rename_workspace"]["target"], "Project Alpha")
         self.assertEqual(found["rename_tab"]["target"], "Project Alpha:dev")
         self.assertEqual(found["split_right"]["target"], "~/projects/alpha")
@@ -43,9 +47,11 @@ class CommandTests(unittest.TestCase):
     def test_each_command_makes_the_right_call(self):
         found = catalog(agents=("claude",), workspaces=3)
         calls = []
+
         def rpc(method, params=None):
             calls.append((method, params))
             return {"root_pane": {"pane_id": "w1:p9"}}
+
         with patch.object(herdr, "rpc", rpc), patch.object(commands.subprocess, "Popen") as popen:
             found["rename_workspace"]["run"]("  Renamed  ")
             found["split_right"]["run"](None)
@@ -55,22 +61,36 @@ class CommandTests(unittest.TestCase):
             found["start_claude"]["run"](None)
             with self.assertRaisesRegex(RuntimeError, "Type a name first"):
                 found["rename_tab"]["run"]("   ")
-        self.assertEqual(calls[:5], [
-            ("workspace.rename", {"workspace_id": "w1", "label": "Renamed"}),
-            ("pane.split", {"target_pane_id": "w1:p8", "direction": "right", "focus": True,
-                            "cwd": str(Path.home() / "projects/alpha")}),
-            ("tab.close", {"tab_id": "w1:t2"}),
-            ("workspace.move_block", {"workspace_ids": ["w1"], "before_workspace_id": "w3"}),
-            ("pane.rename", {"pane_id": "w1:p8", "label": None})])
+        self.assertEqual(
+            calls[:5],
+            [
+                ("workspace.rename", {"workspace_id": "w1", "label": "Renamed"}),
+                (
+                    "pane.split",
+                    {
+                        "target_pane_id": "w1:p8",
+                        "direction": "right",
+                        "focus": True,
+                        "cwd": str(Path.home() / "projects/alpha"),
+                    },
+                ),
+                ("tab.close", {"tab_id": "w1:t2"}),
+                ("workspace.move_block", {"workspace_ids": ["w1"], "before_workspace_id": "w3"}),
+                ("pane.rename", {"pane_id": "w1:p8", "label": None}),
+            ],
+        )
         self.assertEqual(calls[5][0], "tab.create")
-        self.assertEqual(popen.call_args.args[0][3:], [herdr.HERDR, "claude-w1-p9", "claude", "w1:p9"],
-                         "a name no other agent has: the new pane's")
+        self.assertEqual(
+            popen.call_args.args[0][3:],
+            [herdr.HERDR, "claude-w1-p9", "claude", "w1:p9"],
+            "a name no other agent has: the new pane's",
+        )
         self.assertTrue(popen.call_args.kwargs["start_new_session"], "the agent's start outlives the popup")
 
     def test_agent_start_retries_then_reports_a_failure(self):
         fake = Path(tempfile.mkdtemp()) / "herdr"
         self.addCleanup(shutil.rmtree, fake.parent)
-        fake.write_text(f"#!/bin/sh\necho \"$*\" >> {fake}.calls\ncase $1 in agent) exit 1;; esac\n")
+        fake.write_text(f'#!/bin/sh\necho "$*" >> {fake}.calls\ncase $1 in agent) exit 1;; esac\n')
         fake.chmod(0o755)
         subprocess.run(["sh", "-c", commands.START, str(fake), "claude-w1-p9", "claude", "w1:p9"], check=True)
         calls = Path(f"{fake}.calls").read_text().splitlines()

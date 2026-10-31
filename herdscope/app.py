@@ -178,10 +178,15 @@ def loop(panes, screen, palette, view, previewer, catalog):
 
 def remote_focused(screen, palette, label, machine):
     """Herdr has no plugin API to switch the client's displayed machine, so say where to look."""
-    render.draw_message(screen, palette, [
-        (f"Focused {label}", "text"),
-        (f"Select {machine} in Herdr's sidebar to see it.", "subtext0"),
-        ("Press any key to close", "overlay0")])
+    render.draw_message(
+        screen,
+        palette,
+        [
+            (f"Focused {label}", "text"),
+            (f"Select {machine} in Herdr's sidebar to see it.", "subtext0"),
+            ("Press any key to close", "overlay0"),
+        ],
+    )
     screen.refresh()
     with suppress(EOFError):
         while not screen.event(1):

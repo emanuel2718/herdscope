@@ -38,12 +38,13 @@ SECTION = {"agent": 0, "terminal": 1, "error": 2}
 
 # Entries -----------------------------------------------------------------------------------
 
+
 def display_path(entry):
     """The entry's folder, with the home folder as ~ for local panes."""
     path = entry.get("cwd", "")
     home = str(Path.home())
     if not entry.get("machine_id") and (path == home or path.startswith(home + "/")):
-        path = "~" + path[len(home):]
+        path = "~" + path[len(home) :]
     return path
 
 
@@ -63,8 +64,10 @@ def labels(entry):
 def entries(snapshot, machine=None, origin=None):
     """The snapshot's panes as entries; a remote `machine` lists only its agents."""
     machine_id = machine["id"] if machine else None
-    scope = json.dumps(["machine", machine_id, machine.get("session", "default")] if machine
-                       else history.local_scope(), separators=(",", ":"))
+    scope = json.dumps(
+        ["machine", machine_id, machine.get("session", "default")] if machine else history.local_scope(),
+        separators=(",", ":"),
+    )
     workspaces = {w["workspace_id"]: w for w in snapshot.get("workspaces", [])}
     tabs = {t["tab_id"]: t for t in snapshot.get("tabs", [])}
     agents = {a["pane_id"]: a for a in snapshot.get("agents", [])}
@@ -79,39 +82,60 @@ def entries(snapshot, machine=None, origin=None):
         workspace = workspaces.get(pane["workspace_id"], {})
         tab = tabs.get(pane["tab_id"], {})
         key = history.pane_key(scope, pane)
-        result.append({
-            "id": key, "key": key,
-            "kind": "agent" if agent else "terminal", "machine_id": machine_id,
-            "machine": herdr.clean(machine["label"]) if machine else "Local",
-            "pane_id": pane["pane_id"], "terminal_id": pane.get("terminal_id"),
-            "workspace_id": pane["workspace_id"], "tab_id": pane["tab_id"],
-            "agent": agent or "", "status": (pane.get("agent_status") or "unknown") if agent else "",
-            "workspace": herdr.clean(workspace.get("label", pane["workspace_id"])),
-            "tab": herdr.clean(tab.get("label", pane["tab_id"].split(":")[-1])),
-            "title": herdr.clean(pane.get("title") or pane.get("terminal_title_stripped") or pane.get("label")),
-            "cwd": pane.get("foreground_cwd") or pane.get("cwd") or "",
-            "current": pane["pane_id"] == focused,
-            "order": [workspace.get("number", 0), tab.get("number", 0), position],
-        })
+        result.append(
+            {
+                "id": key,
+                "key": key,
+                "kind": "agent" if agent else "terminal",
+                "machine_id": machine_id,
+                "machine": herdr.clean(machine["label"]) if machine else "Local",
+                "pane_id": pane["pane_id"],
+                "terminal_id": pane.get("terminal_id"),
+                "workspace_id": pane["workspace_id"],
+                "tab_id": pane["tab_id"],
+                "agent": agent or "",
+                "status": (pane.get("agent_status") or "unknown") if agent else "",
+                "workspace": herdr.clean(workspace.get("label", pane["workspace_id"])),
+                "tab": herdr.clean(tab.get("label", pane["tab_id"].split(":")[-1])),
+                "title": herdr.clean(pane.get("title") or pane.get("terminal_title_stripped") or pane.get("label")),
+                "cwd": pane.get("foreground_cwd") or pane.get("cwd") or "",
+                "current": pane["pane_id"] == focused,
+                "order": [workspace.get("number", 0), tab.get("number", 0), position],
+            }
+        )
     return result
 
 
 def error_entry(label, message, machine_id=None, pending=False):
     """A row standing in for a server that failed, or a machine still connecting."""
-    return {"id": json.dumps(["error", machine_id or label]),
-            "kind": "error", "key": None, "machine": herdr.clean(label), "machine_id": machine_id,
-            "status": "connecting" if pending else "offline", "error": herdr.clean(message)}
+    return {
+        "id": json.dumps(["error", machine_id or label]),
+        "kind": "error",
+        "key": None,
+        "machine": herdr.clean(label),
+        "machine_id": machine_id,
+        "status": "connecting" if pending else "offline",
+        "error": herdr.clean(message),
+    }
 
 
 def rank(entry, scores):
     """The sort key with an empty query: attention order (blocked, working, done, idle), then
     frecency, then sidebar order. The pane you are already looking at sinks to the end."""
     visits = scores.get(entry.get("key"), (0, 0))
-    return (SECTION[entry["kind"]], entry.get("current", False), STATUS_ORDER.get(entry.get("status"), 4),
-            -visits[0], entry.get("machine_id") or "", entry.get("order", []), entry["id"])
+    return (
+        SECTION[entry["kind"]],
+        entry.get("current", False),
+        STATUS_ORDER.get(entry.get("status"), 4),
+        -visits[0],
+        entry.get("machine_id") or "",
+        entry.get("order", []),
+        entry["id"],
+    )
 
 
 # Acting on entries -------------------------------------------------------------------------
+
 
 def validate(entry):
     """Raise unless the entry's pane still runs the terminal it listed."""
@@ -146,13 +170,31 @@ def close(entry):
 def read(entry, lines, stop=None):
     """The pane's most recent `lines` lines, with SGR colors; `stop` cancels a remote read."""
     if entry.get("machine_id"):
-        return herdr.cli(["--machine", entry["machine_id"], "agent", "read", entry["pane_id"], "--source", "recent",
-                          "--lines", str(lines), "--format", "ansi"], stop=stop, raw=True)
-    return herdr.rpc("pane.read", {"pane_id": entry["pane_id"], "source": "recent", "lines": lines,
-                                   "format": "ansi", "strip_ansi": False})["read"]["text"]
+        return herdr.cli(
+            [
+                "--machine",
+                entry["machine_id"],
+                "agent",
+                "read",
+                entry["pane_id"],
+                "--source",
+                "recent",
+                "--lines",
+                str(lines),
+                "--format",
+                "ansi",
+            ],
+            stop=stop,
+            raw=True,
+        )
+    return herdr.rpc(
+        "pane.read",
+        {"pane_id": entry["pane_id"], "source": "recent", "lines": lines, "format": "ansi", "strip_ansi": False},
+    )["read"]["text"]
 
 
 # Remote machines, as last seen ----------------------------------------------------------------
+
 
 def load_machines():
     """{machine: {"at": when, "entries": panes}} as the picker last saw them."""
@@ -170,6 +212,7 @@ def save_machines(machines):
 
 
 # The live inventory --------------------------------------------------------------------------
+
 
 class Inventory:
     """Collect each server independently; animation and typing never cause API traffic."""
@@ -211,8 +254,7 @@ class Inventory:
         """(version, entries in rank order); the version changes only when data does."""
         with self.lock:
             if not self.cache or self.cache[0] != self.version:
-                ranked = sorted((pair for group in self.sources.values() for pair in group),
-                                key=operator.itemgetter(0))
+                ranked = sorted((pair for group in self.sources.values() for pair in group), key=operator.itemgetter(0))
                 self.cache = (self.version, [entry for _, entry in ranked])
             return self.cache
 
@@ -248,9 +290,11 @@ class Inventory:
 
     def discover(self):
         try:
-            machines = [{**machine, "label": machine.get("label") or machine["id"]}
-                        for machine in herdr.cli(["machine", "list", "--json"], stop=self.stop)
-                        if machine.get("enabled", True)]
+            machines = [
+                {**machine, "label": machine.get("label") or machine["id"]}
+                for machine in herdr.cli(["machine", "list", "--json"], stop=self.stop)
+                if machine.get("enabled", True)
+            ]
         except Exception as error:  # An odd machine list must not take the picker down.
             if not self.stop.is_set():
                 self.publish("discovery", [error_entry("Machines", str(error))])

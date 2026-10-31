@@ -42,13 +42,16 @@ class HistoryTests(StateTestCase):
 
         for pane_id in ("w1:p0", "w9:p1"):  # The second closed before its hook ran: nothing to record.
             event = {"event": "pane_focused", "data": {"pane_id": pane_id}}
-            with patch.dict(os.environ, {"HERDR_PLUGIN_EVENT_JSON": json.dumps(event)}), \
-                    patch.object(herdr, "rpc", side_effect=rpc) as calls:
+            with (
+                patch.dict(os.environ, {"HERDR_PLUGIN_EVENT_JSON": json.dumps(event)}),
+                patch.object(herdr, "rpc", side_effect=rpc) as calls,
+            ):
                 history.record_visit()
         self.assertEqual(list(history.visits()), [history.pane_key(history.local_scope(), data["panes"][0])])
         self.assertEqual(os.listdir(folder), ["w1:p0"])
-        self.assertNotIn("session.snapshot", [c.args[0] for c in calls.call_args_list],
-                         "tidying waits PRUNE_EVERY between runs")
+        self.assertNotIn(
+            "session.snapshot", [c.args[0] for c in calls.call_args_list], "tidying waits PRUNE_EVERY between runs"
+        )
 
     def test_status_hook_records_when_each_status_began(self):
         items, path = inventory.entries(snapshot()), history.status_dir() / "w1:p0"
@@ -56,11 +59,24 @@ class HistoryTests(StateTestCase):
 
         def hook(status, pane="w1:p0", at=None):
             # Herdr's compact JSON. A title can't pose as a field: its quotes are escaped.
-            event = json.dumps({"event": "pane_agent_status_changed", "data": {
-                "pane_id": pane, "title": 'say "agent_status":"done"', "agent_status": status}}, separators=(",", ":"))
-            subprocess.run(["sh", "scripts/record-status.sh"], check=True, cwd=ROOT, env={
-                **os.environ, "HERDR_PLUGIN_STATE_DIR": str(herdr.STATE), "HERDR_SOCKET_PATH": herdr.SOCKET,
-                "HERDR_PLUGIN_EVENT_JSON": event})
+            event = json.dumps(
+                {
+                    "event": "pane_agent_status_changed",
+                    "data": {"pane_id": pane, "title": 'say "agent_status":"done"', "agent_status": status},
+                },
+                separators=(",", ":"),
+            )
+            subprocess.run(
+                ["sh", "scripts/record-status.sh"],
+                check=True,
+                cwd=ROOT,
+                env={
+                    **os.environ,
+                    "HERDR_PLUGIN_STATE_DIR": str(herdr.STATE),
+                    "HERDR_SOCKET_PATH": herdr.SOCKET,
+                    "HERDR_PLUGIN_EVENT_JSON": event,
+                },
+            )
             if at:
                 os.utime(path, (at, at))
 

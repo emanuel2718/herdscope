@@ -12,7 +12,7 @@ from tests.support import PREVIEW, Rows, catalog, snapshot
 class RenderTests(unittest.TestCase):
     def test_spinner_and_status_icons(self):
         working = inventory.entries(snapshot())[1]
-        self.assertNotEqual(render.status_icon(working, 0)[0], render.status_icon(working, .1)[0])
+        self.assertNotEqual(render.status_icon(working, 0)[0], render.status_icon(working, 0.1)[0])
         self.assertEqual(render.status_icon(working, 0, symbols=True), ("◐", "yellow"))
         self.assertEqual(render.status_icon(inventory.entries(snapshot())[0], 0), ("●", "red"))
 
@@ -23,8 +23,7 @@ class RenderTests(unittest.TestCase):
         frame = Canvas(height, width)
         with app.Previewer(Style(), read) as previewer:
             for _ in range(20):
-                render.draw(frame, palette, view, rows.entries, view.results(1, rows.entries), 0, previewer,
-                               wall=wall)
+                render.draw(frame, palette, view, rows.entries, view.results(1, rows.entries), 0, previewer, wall=wall)
                 if not view.preview or previewer.get(view.selected):
                     break
                 time.sleep(0.02)
@@ -39,8 +38,9 @@ class RenderTests(unittest.TestCase):
 
     def test_layout_keeps_selection_visible_and_fits_every_size(self):
         base = inventory.entries(snapshot())
-        entries = [{**base[i % 5], "id": str(i), "key": str(i), "title": f"Task {i} 中文", "order": [i]}
-                   for i in range(40)]
+        entries = [
+            {**base[i % 5], "id": str(i), "key": str(i), "title": f"Task {i} 中文", "order": [i]} for i in range(40)
+        ]
         for height, width in ((44, 178), (40, 120), (34, 90), (18, 70), (12, 45), (5, 20)):
             frame, view = self.draw(height, width, entries, selected="39", index=39)
             self.assertTrue(all(len(line) == width for line in frame.cells))
@@ -61,6 +61,7 @@ class RenderTests(unittest.TestCase):
     def test_preview_failure_is_shown_not_raised(self):
         def fail(entry, lines):
             raise RuntimeError("pane went away")
+
         frame, _ = self.draw(30, 150, read=fail)
         self.assertIn("Preview unavailable: pane went away", frame.text())
 
@@ -88,6 +89,7 @@ class RenderTests(unittest.TestCase):
             tabs = next(line for line in lines if "Terminals" in line and "All" in line)
             row = next(line for line in lines if "› nvim  ~/projects" in line)
             return tabs.index("Agents"), tabs.index("Terminals"), row.index("Project Alpha:dev")
+
         self.assertEqual(positions(""), positions("nvim"))
 
     def test_status_column_shows_how_long_each_status_has_held(self):
@@ -131,8 +133,9 @@ class RenderTests(unittest.TestCase):
             palette = render.Palette(theme.load({}))
             frame = Canvas(24, width)
             with app.Previewer(Style(), lambda entry, lines: "") as previewer:
-                render.draw(frame, palette, view, Rows(entries).entries, view.results(1, Rows(entries).entries), 0,
-                               previewer)
+                render.draw(
+                    frame, palette, view, Rows(entries).entries, view.results(1, Rows(entries).entries), 0, previewer
+                )
             self.assertIn("typed", frame.text(), width)
 
     def test_empty_tabs_and_searches_say_so(self):

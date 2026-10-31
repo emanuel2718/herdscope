@@ -9,20 +9,62 @@ from herdscope import fuzzy
 
 
 class FuzzyTests(unittest.TestCase):
-    TEXTS = ["Replacing Vue’s TypeScript 6 compatib… rana:4 opencode idle ~/git/work/rana",
-             "nvim ~/git/work/rana rana:1", "~/git/ranamono-v2 ranamono-v2:1", "src/components/UserProfile.vue",
-             "FooBar baz_qux 123abc", "a/b/c/d.e f-g h:i", "abc abc abcabc",
-             "Vue-router setup review rana:3 claude done",
-             "Résumé café naïve", "cafe resume naive"]
+    TEXTS = [
+        "Replacing Vue’s TypeScript 6 compatib… rana:4 opencode idle ~/git/work/rana",
+        "nvim ~/git/work/rana rana:1",
+        "~/git/ranamono-v2 ranamono-v2:1",
+        "src/components/UserProfile.vue",
+        "FooBar baz_qux 123abc",
+        "a/b/c/d.e f-g h:i",
+        "abc abc abcabc",
+        "Vue-router setup review rana:3 claude done",
+        "Résumé café naïve",
+        "cafe resume naive",
+    ]
 
     @unittest.skipUnless(shutil.which("fzf"), "fzf is not installed")
     def test_ranking_matches_the_fzf_binary(self):
-        queries = ["rana vue", "rana", "vue", "nv", "wrk", "'rana", "^nvim", "rana$", "!rana", "rana | foo", "'abc'",
-                   "FB", "fb", "Bar", "!^nvim rana", "s/c/U", "123", "done$", "ue", "a", "rv", "gwr", "^~/g",
-                   "cafe", "naive", "resume", "Resume", "é", "ï", "!café", "^Rés"]
+        queries = [
+            "rana vue",
+            "rana",
+            "vue",
+            "nv",
+            "wrk",
+            "'rana",
+            "^nvim",
+            "rana$",
+            "!rana",
+            "rana | foo",
+            "'abc'",
+            "FB",
+            "fb",
+            "Bar",
+            "!^nvim rana",
+            "s/c/U",
+            "123",
+            "done$",
+            "ue",
+            "a",
+            "rv",
+            "gwr",
+            "^~/g",
+            "cafe",
+            "naive",
+            "resume",
+            "Resume",
+            "é",
+            "ï",
+            "!café",
+            "^Rés",
+        ]
         for query in queries:
-            expected = subprocess.run(["fzf", "--filter", query, "--tiebreak=index"], input="\n".join(self.TEXTS),
-                                      text=True, capture_output=True, env={**os.environ, "FZF_DEFAULT_OPTS": ""})
+            expected = subprocess.run(
+                ["fzf", "--filter", query, "--tiebreak=index"],
+                input="\n".join(self.TEXTS),
+                text=True,
+                capture_output=True,
+                env={**os.environ, "FZF_DEFAULT_OPTS": ""},
+            )
             self.assertEqual([t for t, _ in fuzzy.rank(self.TEXTS, query)], expected.stdout.splitlines(), query)
 
     def test_highlights_the_best_alignment_not_the_leftmost(self):

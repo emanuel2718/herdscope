@@ -11,14 +11,34 @@ from herdscope.view import COMMANDS, SCOPE_KINDS, SCOPES
 
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 SYMBOLS = {"blocked": "▲", "working": "◐", "done": "✓", "idle": "○", "unknown": "?"}
-STATUS_ROLE = {"blocked": "red", "working": "yellow", "done": "green", "idle": "overlay1", "unknown": "overlay0",
-               "connecting": "overlay1", "offline": "red"}
-EMPTY = {None: ("No panes yet", ""), "agent": ("No agents running", "Agents you start in Herdr show up here."),
-         "terminal": ("No terminals", ""), "command": ("No commands", "")}
-HINTS = {"panes": (("↵", "go"), ("⇥", "scope"), (">", "commands"), ("^/", "preview"), ("⇧↑↓", "scroll"),
-                   ("^x", "close"), ("esc", "quit")),
-         "commands": (("↵", "run"), ("⇥", "scope"), ("⌫", "back to panes"), ("esc", "quit")),
-         "input": (("↵", "apply"), ("esc", "back"), ("^u", "clear"))}
+STATUS_ROLE = {
+    "blocked": "red",
+    "working": "yellow",
+    "done": "green",
+    "idle": "overlay1",
+    "unknown": "overlay0",
+    "connecting": "overlay1",
+    "offline": "red",
+}
+EMPTY = {
+    None: ("No panes yet", ""),
+    "agent": ("No agents running", "Agents you start in Herdr show up here."),
+    "terminal": ("No terminals", ""),
+    "command": ("No commands", ""),
+}
+HINTS = {
+    "panes": (
+        ("↵", "go"),
+        ("⇥", "scope"),
+        (">", "commands"),
+        ("^/", "preview"),
+        ("⇧↑↓", "scroll"),
+        ("^x", "close"),
+        ("esc", "quit"),
+    ),
+    "commands": (("↵", "run"), ("⇥", "scope"), ("⌫", "back to panes"), ("esc", "quit")),
+    "input": (("↵", "apply"), ("esc", "back"), ("^u", "clear")),
+}
 STATUS_WIDTH = len("working 11mo")
 
 
@@ -34,8 +54,9 @@ class Palette:
         if key not in self.cache:
             # "dim" is the terminal's own text, dimmed; as a background it is the default.
             color, ground = self.tokens.get(fg, fg), self.tokens.get(bg, bg)
-            self.cache[key] = Style(None if color == "dim" else color, None if ground == "dim" else ground, bold,
-                                    color == "dim", italic)
+            self.cache[key] = Style(
+                None if color == "dim" else color, None if ground == "dim" else ground, bold, color == "dim", italic
+            )
         return self.cache[key]
 
 
@@ -91,10 +112,12 @@ def columns(items, width):
     Widths come from every pane, not just the matches, so typing never moves a column.
     """
     panes = [item for item in items if item.entry["kind"] in ("agent", "terminal")]
-    caps = [("machine", 14 if len({item.entry["machine"] for item in panes}) > 1 else 0), ("agent", 12),
-            ("place", 24)]
-    chosen = [(name, size) for name, cap in caps
-              if (size := min(cap, max((text_width(item.fields.get(name, "")) for item in panes), default=0)))]
+    caps = [("machine", 14 if len({item.entry["machine"] for item in panes}) > 1 else 0), ("agent", 12), ("place", 24)]
+    chosen = [
+        (name, size)
+        for name, cap in caps
+        if (size := min(cap, max((text_width(item.fields.get(name, "")) for item in panes), default=0)))
+    ]
     if any(item.entry["kind"] in ("agent", "error") for item in items):
         chosen.append(("status", STATUS_WIDTH))
     return fit(chosen, width, ("machine", "agent", "place", "status"), 22)
@@ -103,8 +126,10 @@ def columns(items, width):
 def command_columns(items, width):
     """A command's category, target and shortcut columns, sized from every command."""
     found = [item.entry for item in items if item.entry["kind"] == "command"]
-    chosen = [(name, min(cap, max((text_width(entry[name]) for entry in found), default=0)))
-              for name, cap in (("category", 10), ("target", 24), ("binding", 8))]
+    chosen = [
+        (name, min(cap, max((text_width(entry[name]) for entry in found), default=0)))
+        for name, cap in (("category", 10), ("target", 24), ("binding", 8))
+    ]
     return fit(chosen, width, ("category", "target", "binding"), 20)
 
 
@@ -145,8 +170,9 @@ def draw_command(p, y, x, width, item, hl, selected, cols, backgrounds):
     p.text(y, x + 2, glyph, role, bg, bold=True)
     starts = place(cols, x, width)
     for name, size in cols:
-        role = ("subtext0" if selected else "overlay0") if name == "binding" else \
-            ("subtext0" if selected else "overlay1")
+        role = (
+            ("subtext0" if selected else "overlay0") if name == "binding" else ("subtext0" if selected else "overlay1")
+        )
         p.text(y, starts[name], entry[name], role, bg, size, hl=hl.get(name))
     column = min(starts.values(), default=x + width) - 2
     p.text(y, x + 4, entry["title"], "text", bg, column - (x + 4), selected, hl.get("label"))
@@ -188,12 +214,19 @@ def draw_row(p, y, x, width, item, hl, selected, cols, now, wall, backgrounds):
         column = min(column, at - 2)
     # Label, then a "current" tag, then the terminal's directory or the error, as far as they fit.
     current = entry.get("current")
-    at = p.text(y, x + 4, fields["label"], "text", bg, column - (x + 4) - (9 if current else 0), selected,
-                hl.get("label"))
+    at = p.text(
+        y, x + 4, fields["label"], "text", bg, column - (x + 4) - (9 if current else 0), selected, hl.get("label")
+    )
     extras = [("current", faint, None, True)] if current else []
     if fields.get("detail") or entry["kind"] == "error":
-        extras.append((fields.get("detail") or fields["path"], "red" if entry["status"] == "offline" else faint,
-                       hl.get("detail") or hl.get("path"), False))
+        extras.append(
+            (
+                fields.get("detail") or fields["path"],
+                "red" if entry["status"] == "offline" else faint,
+                hl.get("detail") or hl.get("path"),
+                False,
+            )
+        )
     for value, role, marks, italic in extras:
         room = column - at - 2
         if room < 6:
@@ -219,11 +252,18 @@ def draw_split(p, y, x, width, height, entry, entries):
         for row in range(top + 1, top + h - 1):
             p.text(row, left, vertical, role)
             p.text(row, left + w - 1, vertical, role)
-        for (row, column), corner in zip(((top, left), (top, left + w - 1), (top + h - 1, left),
-                                          (top + h - 1, left + w - 1)), corners):
+        for (row, column), corner in zip(
+            ((top, left), (top, left + w - 1), (top + h - 1, left), (top + h - 1, left + w - 1)), corners
+        ):
             p.text(row, column, corner, role)
-        p.text(top + h // 2, left + max(1, (w - text_width(text)) // 2), text, "accent" if new else "subtext0",
-               width=w - 2, bold=new)
+        p.text(
+            top + h // 2,
+            left + max(1, (w - text_width(text)) // 2),
+            text,
+            "accent" if new else "subtext0",
+            width=w - 2,
+            bold=new,
+        )
 
 
 def draw_header(p, top, x, width, glyph, role, title, hl, parts):
@@ -255,8 +295,12 @@ def draw_command_preview(p, view, item, hl, area, entries, now, inset):
     entry, asking = item.entry, view.prompt == item.entry["id"]
     glyph, role = status_icon(entry, now)
     parts = [(part, "overlay1", None) for part in (entry["category"], entry["target"], entry["binding"]) if part]
-    y = draw_header(p, top, x, width, glyph, "red" if role == "red" else "accent", entry["title"], hl.get("label"),
-                    parts) + 2
+    y = (
+        draw_header(
+            p, top, x, width, glyph, "red" if role == "red" else "accent", entry["title"], hl.get("label"), parts
+        )
+        + 2
+    )
     for line in wrap(entry["about"], width, 4):
         p.text(y, x, line, "subtext0")
         y += 1
@@ -351,7 +395,7 @@ def draw_preview(p, view, item, hl, area, previewer, now, inset):
         label = f"↑{view.preview_scroll}"
         p.text(meta, x + width - text_width(label), label, "overlay1")
     start = max(0, len(lines) - rows - view.preview_scroll)
-    for i, runs in enumerate(lines[start:start + rows]):
+    for i, runs in enumerate(lines[start : start + rows]):
         at = x
         for text, style in runs:
             at = p.canvas.put(body + i, at, text, style, limit=x + width - at)
@@ -386,8 +430,9 @@ def footer(p, view, y, x, width, bg):
     pending = view.find(view.confirm) if view.confirm else None
     if pending:
         entry = pending.entry
-        question = entry.get("confirm") or \
-            f"Close {entry['agent'] or 'terminal'} in {entry['workspace']}:{entry['tab']}?"
+        question = (
+            entry.get("confirm") or f"Close {entry['agent'] or 'terminal'} in {entry['workspace']}:{entry['tab']}?"
+        )
         at = p.text(y, x + 2, question, "peach", bg, limit - x - 2, bold=True)
         if entry["kind"] == "agent":
             at = p.text(y, at + 1, "This stops the agent.", "peach", bg, max(0, limit - at - 1))
@@ -424,7 +469,7 @@ def draw_prompt(p, view, y, x, width, counter):
         p.text(y, x + 2, ">" if in_commands else "❯", "accent", "sidebar_bg", bold=True)
         start, placeholder = x + 4, "run a command" if in_commands else "search"
     room = max(1, x + width - 4 - text_width(counter) - start)
-    shown, before = view.query, text_width(view.query[:view.cursor])
+    shown, before = view.query, text_width(view.query[: view.cursor])
     while before >= room and shown:
         before -= text_width(shown[0])
         shown = shown[1:]
@@ -443,8 +488,7 @@ def draw_tabs(p, view, y, x, width, total):
     for i, (name, count) in enumerate(zip(SCOPES, view.counts())):
         active, start = i == view.scope, at
         at = p.text(y, at, name, "text" if active else "overlay1", "sidebar_bg", bold=active)
-        at = p.text(y, at + 1, str(count).ljust(digits), "accent" if active else "overlay0", "sidebar_bg",
-                    bold=active)
+        at = p.text(y, at + 1, str(count).ljust(digits), "accent" if active else "overlay0", "sidebar_bg", bold=active)
         if active:
             underline = (start, at - digits + len(str(count)))
         view.hits["tabs"].append((start, at, i))
@@ -469,7 +513,7 @@ def draw_results(p, view, rows, top, bottom, x, width, now, wall, selected_bg):
     view.offset = max(0, min(view.offset, max(0, len(lines) - visible)))
     cols = measured_columns(view, width - 1)
     backgrounds = ("sidebar_bg", selected_bg)
-    for n, line in enumerate(lines[view.offset:view.offset + visible]):
+    for n, line in enumerate(lines[view.offset : view.offset + visible]):
         if line is not None:
             item, hl = rows[line]
             draw_row(p, top + n, x, width, item, hl, line == view.index, cols, now, wall, backgrounds)
@@ -521,12 +565,23 @@ def draw(canvas, palette, view, entries, rows, now, previewer, loading=False, wa
         counter = f"{SPINNER[int(now * 10) % 10]} {counter}"
     draw_prompt(p, view, prompt_y, lx, lw, counter)
     draw_tabs(p, view, tabs_y, lx, lw, len(entries))
-    draw_results(p, view, rows, tabs_y + 2 + roomy, hints_y - roomy, lx, lw, now,
-                 time.time() if wall is None else wall, "panel_bg" if lifted else "selection_bg")
+    draw_results(
+        p,
+        view,
+        rows,
+        tabs_y + 2 + roomy,
+        hints_y - roomy,
+        lx,
+        lw,
+        now,
+        time.time() if wall is None else wall,
+        "panel_bg" if lifted else "selection_bg",
+    )
     footer(p, view, hints_y, lx, lw, "sidebar_bg")
     # Spinners are all that moves by itself, so the loop wakes at their pace only while one shows.
-    view.hits["animated"] = loading or any(rows[line][0].entry.get("status") in ("working", "connecting")
-                                           for line in view.hits["rows"].values())
+    view.hits["animated"] = loading or any(
+        rows[line][0].entry.get("status") in ("working", "connecting") for line in view.hits["rows"].values()
+    )
     previewing = False
     if preview_area:
         view.hits["preview"] = preview_area
@@ -554,4 +609,3 @@ def draw_message(canvas, palette, lines):
     for i, (text, role) in enumerate(lines):
         p.text(top + 1 + i, left + 2, text, role, "surface0", inner - 4, bold=i == 0)
     canvas.cursor = None
-

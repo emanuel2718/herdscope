@@ -11,8 +11,10 @@ from pathlib import Path
 PLUGIN = os.environ.get("HERDR_PLUGIN_ID", "emanuel2718.herdscope")
 HERDR = os.environ.get("HERDR_BIN_PATH", "herdr")
 SOCKET = os.environ.get("HERDR_SOCKET_PATH", str(Path.home() / ".config/herdr/herdr.sock"))
-STATE = Path(os.environ.get("HERDR_PLUGIN_STATE_DIR") or Path(
-    os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "herdr/plugins" / PLUGIN)
+STATE = Path(
+    os.environ.get("HERDR_PLUGIN_STATE_DIR")
+    or Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "herdr/plugins" / PLUGIN
+)
 
 # Failures worth a message rather than a traceback.
 ERRORS = (OSError, ValueError, KeyError, RuntimeError)
@@ -48,8 +50,14 @@ def cli(args, stop=None, timeout=6, raw=False):
     # Only the picker reaches other machines; the hooks start faster without subprocess.
     import subprocess  # noqa: PLC0415
 
-    process = subprocess.Popen([HERDR, *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, text=True, start_new_session=True)
+    process = subprocess.Popen(
+        [HERDR, *args],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
     deadline = time.monotonic() + timeout
     try:
         while True:

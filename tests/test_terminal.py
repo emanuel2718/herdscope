@@ -14,14 +14,28 @@ from herdscope.terminal import Canvas, Style, Terminal, parse_ansi, parse_input,
 
 class TerminalTests(unittest.TestCase):
     def test_input_decoding(self):
-        cases = {"\x1b[A": ("key", "up"), "\x1b[1;2B": ("key", "shift-down"), "\x1b[1;5D": ("key", "ctrl-left"),
-                 "\x1bOA": ("key", "up"), "\x1b[3~": ("key", "delete"), "\x1b[6~": ("key", "pgdn"),
-                 "\x1b[Z": ("key", "shift-tab"), "\x1bb": ("key", "alt-b"), "\x1b\x7f": ("key", "alt-backspace"),
-                 "\r": ("key", "enter"), "\x0e": ("key", "ctrl-n"), "\x19": ("key", "ctrl-y"),
-                 "\x1f": ("key", "ctrl-/"),
-                 "\x7f": ("key", "backspace"), "\t": ("key", "tab"), "\x1b[99;5u": ("key", "ctrl-c"),
-                 "héllo": ("text", "héllo"), "\x1b[<0;5;3M": ("mouse", (0, 4, 2, True)),
-                 "\x1b[<65;1;1M": ("mouse", (65, 0, 0, True)), "\x1b[200~a\nb\x1b[201~": ("paste", "a\nb")}
+        cases = {
+            "\x1b[A": ("key", "up"),
+            "\x1b[1;2B": ("key", "shift-down"),
+            "\x1b[1;5D": ("key", "ctrl-left"),
+            "\x1bOA": ("key", "up"),
+            "\x1b[3~": ("key", "delete"),
+            "\x1b[6~": ("key", "pgdn"),
+            "\x1b[Z": ("key", "shift-tab"),
+            "\x1bb": ("key", "alt-b"),
+            "\x1b\x7f": ("key", "alt-backspace"),
+            "\r": ("key", "enter"),
+            "\x0e": ("key", "ctrl-n"),
+            "\x19": ("key", "ctrl-y"),
+            "\x1f": ("key", "ctrl-/"),
+            "\x7f": ("key", "backspace"),
+            "\t": ("key", "tab"),
+            "\x1b[99;5u": ("key", "ctrl-c"),
+            "héllo": ("text", "héllo"),
+            "\x1b[<0;5;3M": ("mouse", (0, 4, 2, True)),
+            "\x1b[<65;1;1M": ("mouse", (65, 0, 0, True)),
+            "\x1b[200~a\nb\x1b[201~": ("paste", "a\nb"),
+        }
         for sequence, expected in cases.items():
             self.assertEqual(parse_input(sequence), (expected, len(sequence)), repr(sequence))
         self.assertEqual(parse_input("\x1b"), (None, 0))
@@ -32,12 +46,16 @@ class TerminalTests(unittest.TestCase):
 
     def test_preview_decodes_colors_and_drops_other_controls(self):
         base = Style("#ffffff", "#000000")
-        text = ("\x1b[38;2;1;2;3mrgb\x1b[0m \x1b[38;5;4midx\x1b[39m \x1b[91mbright\x1b[0m\r\n"
-                "\x1b[7mrev\x1b[27m\x1b]8;;http://x\x07link\x1b]8;;\x07\tz\x1b[2K\n\x1b[38:2::9:8:7mcolon\n\n  \n")
+        text = (
+            "\x1b[38;2;1;2;3mrgb\x1b[0m \x1b[38;5;4midx\x1b[39m \x1b[91mbright\x1b[0m\r\n"
+            "\x1b[7mrev\x1b[27m\x1b]8;;http://x\x07link\x1b]8;;\x07\tz\x1b[2K\n\x1b[38:2::9:8:7mcolon\n\n  \n"
+        )
         lines = parse_ansi(text, base)
         self.assertEqual(len(lines), 3, "trailing blank lines are trimmed")
-        self.assertEqual([(t, s.fg) for t, s in lines[0]],
-                         [("rgb", "#010203"), (" ", "#ffffff"), ("idx", 4), (" ", "#ffffff"), ("bright", 9)])
+        self.assertEqual(
+            [(t, s.fg) for t, s in lines[0]],
+            [("rgb", "#010203"), (" ", "#ffffff"), ("idx", 4), (" ", "#ffffff"), ("bright", 9)],
+        )
         self.assertEqual(lines[1][0], ("rev", Style("#000000", "#ffffff")))
         self.assertEqual("".join(t for t, _ in lines[1]), "revlink z", "tab stops count printed columns")
         self.assertEqual(lines[2][0][1].fg, "#090807")
@@ -93,12 +111,14 @@ class TerminalTests(unittest.TestCase):
         termios.tcsetwinsize(slave, (5, 20))
         os.write(master, b"cla")
         time.sleep(0.05)
+
         def drain():  # Leaving the terminal waits for its output to be read, as a real terminal would.
             try:
                 while os.read(master, 65536):
                     pass
             except OSError:
                 pass  # The test closed the terminal.
+
         threading.Thread(target=drain, daemon=True).start()
         with Terminal(stream, stream) as screen:
             self.assertEqual(screen.event(0.5), ("text", "cla"))
@@ -140,5 +160,8 @@ class TerminalTests(unittest.TestCase):
         frame.put(0, 1, "b", Style())
         self.assertEqual([char for char, _ in frame.cells[0]][:3], [" ", "b", "a"], "no orphaned half glyphs")
         frame.put(1, 0, "你\u0301❤\ufe0fx", Style())
-        self.assertEqual([char for char, _ in frame.cells[1]][:4], ["你\u0301", "", "❤\ufe0f", "x"],
-                         "marks and emoji selectors stay with their glyph")
+        self.assertEqual(
+            [char for char, _ in frame.cells[1]][:4],
+            ["你\u0301", "", "❤\ufe0f", "x"],
+            "marks and emoji selectors stay with their glyph",
+        )

@@ -36,8 +36,10 @@ def main(action):
         from herdscope import herdr, history, inventory
 
         scores = history.visits()
-        ranked = sorted(inventory.entries(herdr.rpc("session.snapshot")["snapshot"]),
-                        key=lambda entry: inventory.rank(entry, scores))
+        ranked = sorted(
+            inventory.entries(herdr.rpc("session.snapshot")["snapshot"]),
+            key=lambda entry: inventory.rank(entry, scores),
+        )
         print(json.dumps(ranked, indent=2))
     else:
         print(USAGE, file=sys.stderr)

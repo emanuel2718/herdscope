@@ -16,9 +16,7 @@ from tests.support import PREVIEW, snapshot
 
 
 class AppTests(unittest.TestCase):
-
     """Drive the real terminal UI through a pseudo-terminal."""
-
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -37,6 +35,7 @@ class AppTests(unittest.TestCase):
                     with open(Path(self.temp.name) / "rpc.log", "a") as log:
                         log.write(json.dumps([method, params]) + "\n")
                     return {"snapshot": snapshot(), "actions": []}
+
                 herdr.rpc = rpc
                 herdr.cli = lambda *args, **kwargs: []
                 inventory.read = lambda entry, lines: PREVIEW
@@ -45,12 +44,14 @@ class AppTests(unittest.TestCase):
                     if focus_error:
                         raise RuntimeError(focus_error)
                     output.write_text(json.dumps({"focused": entry}))
+
                 inventory.focus = focus
                 inventory.close = lambda entry: output.write_text(json.dumps({"closed": entry}))
                 app.main()
                 os._exit(0)
             except BaseException:
                 import traceback
+
                 traceback.print_exc()
                 os._exit(1)
         transcript = b""
@@ -69,6 +70,7 @@ class AppTests(unittest.TestCase):
                 if answer and not answered and b"\x1b]11;?" in transcript:
                     os.write(fd, answer)
                     answered = True
+
         try:
             deadline = time.monotonic() + 8
             while b"Awaiting approval" not in transcript and time.monotonic() < deadline:

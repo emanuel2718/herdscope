@@ -18,8 +18,12 @@ class ThemeTests(unittest.TestCase):
         self.assertEqual(palette("text", "surface0"), Style(None, None, False, False, False), "never a dim background")
 
     def test_theme_follows_herdr_tokens_and_overrides(self):
-        tokens = theme.load({"theme": {"name": "tokyo-night", "custom": {"red": "#123", "panel_bg": "reset"}},
-                             "ui": {"accent": "magenta", "status_indicators": "symbols"}})
+        tokens = theme.load(
+            {
+                "theme": {"name": "tokyo-night", "custom": {"red": "#123", "panel_bg": "reset"}},
+                "ui": {"accent": "magenta", "status_indicators": "symbols"},
+            }
+        )
         self.assertEqual(tokens["red"], "#112233")
         self.assertIsNone(tokens["panel_bg"])
         self.assertEqual(tokens["accent"], 5)
@@ -36,7 +40,7 @@ class ThemeTests(unittest.TestCase):
         self.assertEqual(tokens["accent"], theme.THEMES["catppuccin"]["accent"], "Herdr's accent, as on its border")
         self.assertTrue(tokens["lifted"])
         light = theme.load({}, terminal=("#2a2c33", "#f9f9f9"))
-        self.assertLess(int(light["panel_bg"][1:3], 16), 0xf9, "light terminals lift toward the text color")
+        self.assertLess(int(light["panel_bg"][1:3], 16), 0xF9, "light terminals lift toward the text color")
         passive = theme.load({})
         self.assertIsNone(passive["panel_bg"])
         self.assertFalse(passive["lifted"])
