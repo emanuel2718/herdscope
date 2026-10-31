@@ -1,6 +1,7 @@
 """The fzf port: ranking parity with fzf itself, highlighting and the search syntax."""
 
 import os
+import random
 import shutil
 import subprocess
 import unittest
@@ -65,7 +66,20 @@ class FuzzyTests(unittest.TestCase):
                 capture_output=True,
                 env={**os.environ, "FZF_DEFAULT_OPTS": ""},
             )
-            self.assertEqual([t for t, _ in fuzzy.rank(self.TEXTS, query)], expected.stdout.splitlines(), query)
+            self.assertEqual(fuzzy.rank(self.TEXTS, query), expected.stdout.splitlines(), query)
+
+    def test_ranking_scores_equal_the_full_match(self):
+        # Ranking scores every candidate without filling fzf's score matrix; it must agree with
+        # the full match, which also finds the positions to highlight. Small alphabets make
+        # repeats, word boundaries and case changes common.
+        rng = random.Random(7)
+        for _ in range(20000):
+            alphabet = rng.choice(["ab", "abc ", "aAbB_-/ 1", "abcdefghij /:._-ABC123"])
+            text = "".join(rng.choice(alphabet) for _ in range(rng.randint(1, 40)))
+            pattern = "".join(rng.choice(alphabet) for _ in range(rng.randint(1, 6))).lower()
+            folded = fuzzy.lower(text)
+            full = fuzzy.fuzzy(text, folded, pattern)
+            self.assertEqual(fuzzy.fuzzy_score(text, folded, pattern), full and full[0], (text, pattern))
 
     def test_highlights_the_best_alignment_not_the_leftmost(self):
         text = self.TEXTS[0]

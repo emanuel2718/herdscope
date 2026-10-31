@@ -10,17 +10,12 @@ import threading
 import time
 import tty
 import unicodedata
+from collections import namedtuple
 from functools import lru_cache
-from typing import NamedTuple
 
-
-class Style(NamedTuple):
-    fg: object = None  # "#rrggbb", palette index, or None for the terminal default
-    bg: object = None
-    bold: bool = False
-    dim: bool = False
-    italic: bool = False
-    underline: bool = False
+# A cell's look. Colors are "#rrggbb", a palette index, or None for the terminal's default.
+# A namedtuple rather than typing.NamedTuple: importing typing adds milliseconds to every start.
+Style = namedtuple("Style", "fg bg bold dim italic underline", defaults=(None, None, False, False, False, False))
 
 
 def color_codes(value, layer):

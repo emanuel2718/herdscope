@@ -75,7 +75,7 @@ def catalog(actions=(), agents=(), keys=None, workspaces=1):
     data["workspaces"] += [
         {"workspace_id": f"w{i}", "label": f"Space {i}", "number": i} for i in range(2, workspaces + 1)
     ]
-    with patch.object(commands.shutil, "which", side_effect=lambda name: name in agents):
+    with patch.object(commands, "installed", side_effect=lambda name: name in agents):
         return {c["id"].split(":", 1)[1]: c for c in commands.catalog(data, {"keys": keys or {}}, actions)}
 
 

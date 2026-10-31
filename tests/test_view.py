@@ -34,7 +34,7 @@ class ViewTests(unittest.TestCase):
         view.results(2, reordered)
         self.assertEqual(view.current().fields["label"], "nvim")
         view.scope = 1
-        self.assertTrue(all(i.entry["kind"] == "agent" for i, _ in view.results(2, reordered)))
+        self.assertTrue(all(i.kind == "agent" for i in view.results(2, reordered)))
 
     def test_typing_on_and_refreshing_rank_like_starting_over(self):
         entries = inventory.entries(snapshot()) + commands.catalog(snapshot(), {})
@@ -42,10 +42,10 @@ class ViewTests(unittest.TestCase):
         for version, query in enumerate(["o", "op", "ope", "ope ", "ope a", "ope aw", "ope a", "!nvim", "a | p"]):
             entries[0] = {**entries[0], "terminal_title_stripped": f"Awaiting approval {version}"}
             view.query = query
-            typed = [(item.entry["id"], hl) for item, hl in view.results(version // 3, entries)]
+            typed = [(item.id, view.highlights(item)) for item in view.results(version // 3, entries)]
             fresh = View()
             fresh.query = query
-            self.assertEqual(typed, [(item.entry["id"], hl) for item, hl in fresh.results(0, entries)], query)
+            self.assertEqual(typed, [(item.id, fresh.highlights(item)) for item in fresh.results(0, entries)], query)
 
     def test_close_targets_the_confirmed_pane_even_if_selection_moves(self):
         rows = Rows(inventory.entries(snapshot()))
@@ -92,10 +92,10 @@ class ViewTests(unittest.TestCase):
         handle(view, ("key", "backspace"), 0)
         self.assertEqual(view.scope, 1, "Backspace on an empty command search goes back")
         view.results(1, entries)
-        self.assertTrue(all(i.entry["kind"] == "agent" for i, _ in view.rows))
+        self.assertTrue(all(i.kind == "agent" for i in view.rows))
         view.scope = 0
         view.results(1, entries)
-        self.assertNotIn("command", {i.entry["kind"] for i, _ in view.rows}, "All lists panes only")
+        self.assertNotIn("command", {i.kind for i in view.rows}, "All lists panes only")
 
     def test_only_y_confirms(self):
         rows = Rows(inventory.entries(snapshot()))

@@ -9,7 +9,6 @@ import heapq
 import json
 import operator
 import os
-import random
 import re
 import sqlite3
 import threading
@@ -68,9 +67,17 @@ def entries(snapshot, machine=None, origin=None):
         ["machine", machine_id, machine.get("session", "default")] if machine else history.local_scope(),
         separators=(",", ":"),
     )
-    workspaces = {w["workspace_id"]: w for w in snapshot.get("workspaces", [])}
-    tabs = {t["tab_id"]: t for t in snapshot.get("tabs", [])}
+    # Labels are cleaned once per workspace and tab, not once per pane.
+    workspaces = {
+        w["workspace_id"]: (herdr.clean(w.get("label", w["workspace_id"])), w.get("number", 0))
+        for w in snapshot.get("workspaces", [])
+    }
+    tabs = {
+        t["tab_id"]: (herdr.clean(t.get("label", t["tab_id"].split(":")[-1])), t.get("number", 0))
+        for t in snapshot.get("tabs", [])
+    }
     agents = {a["pane_id"]: a for a in snapshot.get("agents", [])}
+    machine_label = herdr.clean(machine["label"]) if machine else "Local"
     focused = None if machine else origin or snapshot.get("focused_pane_id")
     result = []
     for position, raw in enumerate(snapshot.get("panes", [])):
@@ -79,8 +86,8 @@ def entries(snapshot, machine=None, origin=None):
         if machine and not agent:
             # The forwarded CLI has agent.focus, but no exact arbitrary-pane focus command.
             continue
-        workspace = workspaces.get(pane["workspace_id"], {})
-        tab = tabs.get(pane["tab_id"], {})
+        workspace, workspace_number = workspaces.get(pane["workspace_id"]) or (herdr.clean(pane["workspace_id"]), 0)
+        tab, tab_number = tabs.get(pane["tab_id"]) or (herdr.clean(pane["tab_id"].split(":")[-1]), 0)
         key = history.pane_key(scope, pane)
         result.append(
             {
@@ -88,19 +95,19 @@ def entries(snapshot, machine=None, origin=None):
                 "key": key,
                 "kind": "agent" if agent else "terminal",
                 "machine_id": machine_id,
-                "machine": herdr.clean(machine["label"]) if machine else "Local",
+                "machine": machine_label,
                 "pane_id": pane["pane_id"],
                 "terminal_id": pane.get("terminal_id"),
                 "workspace_id": pane["workspace_id"],
                 "tab_id": pane["tab_id"],
                 "agent": agent or "",
                 "status": (pane.get("agent_status") or "unknown") if agent else "",
-                "workspace": herdr.clean(workspace.get("label", pane["workspace_id"])),
-                "tab": herdr.clean(tab.get("label", pane["tab_id"].split(":")[-1])),
+                "workspace": workspace,
+                "tab": tab,
                 "title": herdr.clean(pane.get("title") or pane.get("terminal_title_stripped") or pane.get("label")),
                 "cwd": pane.get("foreground_cwd") or pane.get("cwd") or "",
                 "current": pane["pane_id"] == focused,
-                "order": [workspace.get("number", 0), tab.get("number", 0), position],
+                "order": [workspace_number, tab_number, position],
             }
         )
     return result
@@ -240,12 +247,24 @@ class Inventory:
         self.publish("local", history.stamp(entries(self.snapshot, origin=self.origin), self.since, self.seen))
 
     def publish(self, source, values):
-        # Each entry's rank is worked out once, here, so sorting thousands of them after every
-        # change compares ready-made keys.
-        ranked = [(rank(entry, self.scores), entry) for entry in values]
+        """Replace a source's entries, if they changed, and tell the UI.
+
+        Each source is published by one thread at a time, and does its own work here, off the
+        UI thread: each entry is ranked once, and the source sorted, so merging the sources
+        after any change only joins sorted runs. A pane that didn't change keeps its entry
+        object, so the UI can tell what changed by identity rather than by comparing.
+        """
+        old = {entry["id"]: pair for pair in self.sources.get(source, ()) for entry in pair[1:]}
+        ranked, changed = [], len(old) != len(values)
+        for entry in values:
+            pair = old.get(entry["id"])
+            if pair is None or pair[1] != entry:
+                pair, changed = (rank(entry, self.scores), entry), True
+            ranked.append(pair)
+        if not changed:
+            return
+        ranked.sort(key=operator.itemgetter(0))
         with self.lock:
-            if self.sources.get(source) == ranked:
-                return
             self.sources[source] = ranked
             self.version += 1
         self.changed()
@@ -273,7 +292,7 @@ class Inventory:
         with suppress(Exception):  # Durations are a nicety; the list stands without them.
             self.since.update(history.statuses(entries(self.snapshot)))
             self.publish("local", history.stamp(entries(self.snapshot, origin=self.origin), self.since, self.seen))
-        pause = 1
+        pause, previous = 1, self.snapshot
         while True:
             self.poked.wait(pause)
             self.poked.clear()
@@ -282,11 +301,15 @@ class Inventory:
             began = time.monotonic()
             try:
                 snapshot = herdr.rpc("session.snapshot")["snapshot"]
+                if snapshot == previous:
+                    continue  # Most seconds, nothing changed: there is nothing to work out.
                 values = history.stamp(entries(snapshot, origin=self.origin), self.since, self.seen)
             except Exception as error:  # A dead refresh thread would freeze the list silently.
-                values = [error_entry("Local", str(error))]
+                snapshot, values = None, [error_entry("Local", str(error))]
+            finally:
+                pause = max(1, 20 * (time.monotonic() - began))
+            previous = snapshot
             self.publish("local", values)
-            pause = max(1, 20 * (time.monotonic() - began))
 
     def discover(self):
         try:
@@ -320,6 +343,8 @@ class Inventory:
 
     def poll(self, interval):
         """Refresh machines as they fall due, earliest first, backing off those that are idle."""
+        import random  # noqa: PLC0415 - only machines need it, so a start without them skips it.
+
         while True:
             with self.due:
                 while not self.stop.is_set() and (not self.schedule or self.schedule[0][0] > time.monotonic()):

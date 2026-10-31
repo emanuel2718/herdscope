@@ -47,7 +47,7 @@ def cli(args, stop=None, timeout=6, raw=False):
 
     Setting `stop` or passing `timeout` kills the whole process group, SSH included.
     """
-    # Only the picker reaches other machines; the hooks start faster without subprocess.
+    # Imported here: the hooks never reach other machines, and start faster without it.
     import subprocess  # noqa: PLC0415
 
     process = subprocess.Popen(
@@ -86,3 +86,20 @@ def cli(args, stop=None, timeout=6, raw=False):
         if process.poll() is None:
             os.killpg(process.pid, signal.SIGKILL)
             process.communicate()
+
+
+def spawn(args):
+    """Start `args` on its own, to finish after the popup closes; it must not outlive Herdr's patience.
+
+    Used for short, bounded follow-ups only: an action that needs the screen once the popup is
+    gone, or an agent start Herdr waits on for at most its own timeout.
+    """
+    import subprocess  # noqa: PLC0415 - as in cli(): only running a command needs it.
+
+    subprocess.Popen(
+        args,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )

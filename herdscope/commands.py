@@ -5,8 +5,6 @@ started (a popup is never focused itself), its tab and its workspace.
 """
 
 import os
-import shutil
-import subprocess
 
 from herdscope import herdr, inventory
 
@@ -114,14 +112,17 @@ def plural(count, noun):
 
 
 def later(*args):
-    """Run a herdr command detached, once the popup has closed: it may need the screen to itself."""
-    subprocess.Popen(
-        ["sh", "-c", 'sleep 0.3; "$@"', "sh", *args],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    """Run a herdr command once the popup has closed: it may need the screen to itself."""
+    herdr.spawn(["sh", "-c", 'sleep 0.3; "$@"', "sh", *args])
+
+
+def installed(program):
+    """Whether `program` is an executable on PATH, as `which` finds it; shutil is slow to import."""
+    for folder in os.environ.get("PATH", os.defpath).split(os.pathsep):
+        path = os.path.join(folder or os.curdir, program)
+        if os.access(path, os.X_OK) and not os.path.isdir(path):
+            return True
+    return False
 
 
 def command(name, glyph, title, category, target, binding, aliases, run, about, ask=None, confirm=None, **extra):
@@ -374,7 +375,7 @@ def catalog(snapshot, settings, actions=()):
             ),
         ]
         for agent in AGENTS:
-            if shutil.which(agent):
+            if installed(agent):
                 result.append(
                     command(
                         f"start_{agent}",
@@ -456,14 +457,8 @@ def start(agent, workspace_id, cwd):
     def run(text):
         tab = herdr.rpc("tab.create", {"workspace_id": workspace_id, "cwd": cwd, "focus": True, "label": None})
         pane_id = tab["root_pane"]["pane_id"]
-        # Herdr waits until the agent is ready, which outlives the popup, so this runs detached.
-        subprocess.Popen(
-            ["sh", "-c", START, herdr.HERDR, f"{agent}-{pane_id.replace(':', '-')}", agent, pane_id],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        # Herdr waits until the agent is ready, up to its own timeout; the popup closes meanwhile.
+        herdr.spawn(["sh", "-c", START, herdr.HERDR, f"{agent}-{pane_id.replace(':', '-')}", agent, pane_id])
 
     return run
 

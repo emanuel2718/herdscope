@@ -1,5 +1,6 @@
 """The Commands tab's catalog: what each command targets, shows and calls."""
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -52,7 +53,7 @@ class CommandTests(unittest.TestCase):
             calls.append((method, params))
             return {"root_pane": {"pane_id": "w1:p9"}}
 
-        with patch.object(herdr, "rpc", rpc), patch.object(commands.subprocess, "Popen") as popen:
+        with patch.object(herdr, "rpc", rpc), patch.object(herdr, "spawn") as spawn:
             found["rename_workspace"]["run"]("  Renamed  ")
             found["split_right"]["run"](None)
             found["close_tab"]["run"](None)
@@ -81,11 +82,29 @@ class CommandTests(unittest.TestCase):
         )
         self.assertEqual(calls[5][0], "tab.create")
         self.assertEqual(
-            popen.call_args.args[0][3:],
+            spawn.call_args.args[0][3:],
             [herdr.HERDR, "claude-w1-p9", "claude", "w1:p9"],
             "a name no other agent has: the new pane's",
         )
-        self.assertTrue(popen.call_args.kwargs["start_new_session"], "the agent's start outlives the popup")
+
+    def test_spawned_commands_outlive_the_popup_without_its_terminal(self):
+        with patch("subprocess.Popen") as popen:
+            herdr.spawn(["herdr", "plugin", "action", "invoke", "x"])
+        self.assertTrue(popen.call_args.kwargs["start_new_session"], "closing the popup doesn't stop it")
+        self.assertEqual(popen.call_args.kwargs["stdin"], subprocess.DEVNULL, "the popup's terminal is gone")
+
+    def test_agents_are_offered_only_when_installed(self):
+        folder = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, folder)
+        (folder / "claude").write_text("#!/bin/sh\n")
+        (folder / "claude").chmod(0o755)
+        (folder / "codex").write_text("not executable")
+        (folder / "gemini").mkdir()
+        with patch.dict(os.environ, {"PATH": f"/nonexistent{os.pathsep}{folder}"}):
+            self.assertTrue(commands.installed("claude"))
+            self.assertFalse(commands.installed("codex"), "not executable")
+            self.assertFalse(commands.installed("gemini"), "a folder")
+            self.assertFalse(commands.installed("opencode"))
 
     def test_agent_start_retries_then_reports_a_failure(self):
         fake = Path(tempfile.mkdtemp()) / "herdr"
@@ -99,11 +118,11 @@ class CommandTests(unittest.TestCase):
 
     def test_other_plugins_run_after_the_popup_and_wording_fits(self):
         found = catalog(actions=[{"plugin_id": "someone.notes", "action_id": "jot", "title": "Jot"}])
-        with patch.object(commands.subprocess, "Popen") as popen:
+        with patch.object(herdr, "spawn") as spawn:
             found["plugin:someone.notes:jot"]["run"](None)
-        self.assertEqual(popen.call_args.args[0][:2], ["sh", "-c"])
-        self.assertIn("sleep", popen.call_args.args[0][2], "after the popup closes, so its own popup can open")
-        self.assertEqual(popen.call_args.args[0][-4:], ["plugin", "action", "invoke", "someone.notes.jot"])
+        self.assertEqual(spawn.call_args.args[0][:2], ["sh", "-c"])
+        self.assertIn("sleep", spawn.call_args.args[0][2], "after the popup closes, so its own popup can open")
+        self.assertEqual(spawn.call_args.args[0][-4:], ["plugin", "action", "invoke", "someone.notes.jot"])
         self.assertEqual(found["close_workspace"]["confirm"], "Close workspace Project Alpha? Its 5 panes stop.")
         self.assertEqual(found["rename_pane"]["ask"], "~/projects/alpha", "the input starts from the current name")
         self.assertIsNone(found["rename_tab"]["blank"], "a tab needs a name")

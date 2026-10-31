@@ -69,17 +69,24 @@ class Classes(dict):
 
 CLASSES = Classes()
 BONUS = {(previous, current): bonus_for(previous, current) for previous in range(7) for current in range(7)}
+# The same, indexed by one byte: the previous character's class times 8, plus the current one's.
+PAIR_BONUS = bytes(BONUS.get((pair >> 3, pair & 7), 0) for pair in range(256))
 
 
 @lru_cache(maxsize=1 << 15)
 def bonuses(text):
     """The bonus for a match at each position of `text`, which depends on the text alone.
 
-    Worked out in C, by translating characters to classes and looking up each pair, and
-    kept as bytes, so caching one for every item costs a byte per character.
+    Worked out in C, for every item a query reaches: characters translate to classes, a byte
+    each; shifting them as one integer puts each previous class beside its successor's; and
+    one more translate turns each pair into its bonus. Kept as bytes, so caching one for every
+    item costs a byte per character.
     """
+    if not text:
+        return b""
     classes = text.translate(CLASSES).encode("latin-1")
-    return bytes(map(BONUS.__getitem__, zip(bytes([WHITE]) + classes, classes)))
+    previous = int.from_bytes(classes, "big") >> 8 | WHITE << 8 * (len(classes) - 1)
+    return (previous << 3 | int.from_bytes(classes, "big")).to_bytes(len(classes), "big").translate(PAIR_BONUS)
 
 
 # Latin letters without their accents (é → e), as fzf normalizes them. Every item is matched
@@ -130,21 +137,31 @@ def score_range(text, folded, pattern, start, end):
     return score, positions
 
 
+def single(text, folded, char):
+    """A one-character pattern: its best-placed occurrence, preferring the first at a word boundary.
+
+    The first key press matches every item this way, so occurrences are found in C, and only
+    their bonuses are worked out, not the whole text's.
+    """
+    best, best_at, at = -1, 0, folded.find(char)
+    while at >= 0:
+        bonus = BONUS[char_class(text[at - 1]) if at else WHITE, char_class(text[at])]
+        if bonus > best:
+            best, best_at = bonus, at
+            if best >= BONUS_BOUNDARY:
+                break
+        at = folded.find(char, at + 1)
+    return (SCORE_MATCH + best * BONUS_FIRST_CHAR_MULTIPLIER, [best_at]) if best >= 0 else None
+
+
 def fuzzy(text, folded, pattern):
-    """fzf's FuzzyMatchV2: the highest-scoring alignment, not just the leftmost one."""
+    """fzf's FuzzyMatchV2: the highest-scoring alignment, not just the leftmost one, and where it is.
+
+    Ranking needs only the score, which fuzzy_score finds faster; this runs for rows on screen.
+    """
     m = len(pattern)
     if m == 1:
-        # The first key press matches every item against one character: visit its occurrences,
-        # found in C, keeping the best bonus and stopping at the first word boundary.
-        best, best_at, at = -1, 0, folded.find(pattern)
-        while at >= 0:
-            bonus = bonus_for(char_class(text[at - 1]) if at else WHITE, char_class(text[at]))
-            if bonus > best:
-                best, best_at = bonus, at
-                if bonus >= BONUS_BOUNDARY:
-                    break
-            at = folded.find(pattern, at + 1)
-        return (SCORE_MATCH + best * BONUS_FIRST_CHAR_MULTIPLIER, [best_at]) if best >= 0 else None
+        return single(text, folded, pattern)
     # Most items don't match. Rule them out in C first: every pattern char, in order.
     at = -1
     for char in pattern:
@@ -243,6 +260,83 @@ def fuzzy(text, folded, pattern):
     return best, positions
 
 
+def fuzzy_score(text, folded, pattern):
+    """fuzzy()'s score alone, for ranking every candidate, found without filling the score matrix.
+
+    fuzzy() fills a row per pattern character and a column per text character. A row's score
+    only changes where its character occurs; elsewhere it decays by a fixed gap penalty. So
+    this visits only those occurrences, found in C, and works out the decay across the gaps
+    between them: the same recurrence, and the same result, in a fraction of the steps.
+    """
+    if len(pattern) == 1:
+        found = single(text, folded, pattern)
+        return found and found[0]
+    firsts, at = [], -1
+    for char in pattern:  # Most items don't match; this rules them out in C.
+        at = folded.find(char, at + 1)
+        if at < 0:
+            return None
+        firsts.append(at)
+    end, bonus = folded.rfind(pattern[-1]) + 1, bonuses(text)
+    # A row is (column, score, gap penalty, consecutive matches) where its character occurs. The
+    # penalty is the next step's: a gap's first costs more than its later ones. The first row
+    # scores each occurrence as a fresh start.
+    head, row, at = pattern[0], [], firsts[0]
+    while at >= 0:
+        row.append((at, SCORE_MATCH + bonus[at] * BONUS_FIRST_CHAR_MULTIPLIER, SCORE_GAP_START, 1))
+        at = folded.find(head, at + 1, end)
+    best, last = 0, len(pattern) - 1
+    for index in range(1, len(pattern)):
+        above, row, char = row, [], pattern[index]
+        above.append((end, 0, 0, 0))  # Past every column, so the scan below needs no bounds check.
+        # The row so far: its score and next gap penalty after column `done`; it starts empty.
+        left, step, done, k = 0, SCORE_GAP_START, firsts[index] - 1, 0
+        at = firsts[index]
+        while at >= 0:
+            # The row above at the column before: at an occurrence of its character, or decayed since.
+            while above[k + 1][0] < at:
+                k += 1
+            column, diagonal, decay, run = above[k]
+            if column == at - 1:
+                consecutive = run + 1
+            else:
+                diagonal += decay - (at - 2 - column)
+                if diagonal < 0:
+                    diagonal = 0
+                consecutive = 1
+            # This row at the column before, decayed since its last occurrence.
+            if done < at - 1:
+                left += step - (at - 2 - done)
+                if left > 0:
+                    step = SCORE_GAP_EXTENSION
+                else:
+                    left, step = 0, SCORE_GAP_START
+            s2 = left + step
+            s1, gained = diagonal + SCORE_MATCH, bonus[at]
+            if consecutive > 1:
+                first_bonus = bonus[at - consecutive + 1]
+                if gained >= BONUS_BOUNDARY and gained > first_bonus:
+                    consecutive = 1  # Break the consecutive chunk at a stronger boundary.
+                else:
+                    gained = max(gained, BONUS_CONSECUTIVE, first_bonus)
+            if s1 + gained < s2:
+                s1 += bonus[at]
+                consecutive = 0
+            else:
+                s1 += gained
+            if s1 < s2:
+                left, step = s2, SCORE_GAP_EXTENSION
+            else:
+                left, step = s1, SCORE_GAP_START
+            done = at
+            if index < last:
+                row.append((at, left, step, consecutive))
+            elif left > best:
+                best = left
+            at = folded.find(char, at + 1, end)
+    return best
+
+
 def exact(text, folded, pattern, boundary=False):
     best, best_bonus = None, -1
     at = folded.find(pattern)
@@ -273,15 +367,30 @@ def anchored(text, folded, pattern, kind):
     return score_range(text, folded, pattern, start, end)
 
 
-def match_term(term, text, haystacks):
-    """Match one term; `haystacks` are the text as-is, lowercased, unaccented, and both."""
+def match_term(term, text, haystacks, scoring=False):
+    """Match one term: (score, positions), just the score when `scoring`, or None.
+
+    `haystacks` are the text as-is, lowercased, unaccented, and both.
+    """
     kind, pattern, case_sensitive, accented = term[0], term[2], term[3], term[4]
     haystack = haystacks[(0 if case_sensitive else 1) + (0 if accented else 2)]
     if kind == FUZZY:
-        return fuzzy(text, haystack, pattern)
+        return (fuzzy_score if scoring else fuzzy)(text, haystack, pattern)
     if kind in (EXACT, BOUNDARY):
-        return exact(text, haystack, pattern, kind == BOUNDARY)
-    return anchored(text, haystack, pattern, kind)
+        found = exact(text, haystack, pattern, kind == BOUNDARY)
+    else:
+        found = anchored(text, haystack, pattern, kind)
+    return found[0] if scoring and found else found
+
+
+@lru_cache(maxsize=1 << 15)
+def haystacks(text):
+    """The forms of `text` a term may match: as-is, lowercased, unaccented, and both."""
+    if text.isascii():  # Most text: no accents to strip, and lowercasing keeps every position.
+        folded = text.lower()
+        return text, folded, text, folded
+    normalized = normalize(text)
+    return text, lower(text), normalized, lower(normalized)
 
 
 def parse(query):
@@ -320,52 +429,68 @@ def parse(query):
     return sets
 
 
-def remember(seen, text, compute):
-    if text not in seen:
-        if len(seen) > 1 << 16:
-            seen.clear()  # Titles change for as long as the picker stays open.
-        seen[text] = compute()
-    return seen[text]
+MISSING = object()
+FORGET = 1 << 16  # Texts a query remembers results for; titles change while the picker is open.
 
 
 class Query:
+    """A parsed query that remembers what it matched, so asking again about a text is free."""
+
     def __init__(self, text, previous=None):
         """`previous`, the query before this one, lends what its terms matched."""
         self.text = text
         self.sets = parse(text)
-        # What each text matched, for the whole query and for each term. After a refresh only
-        # changed panes are matched again, and typing on reuses shared terms: "fix r" keeps "fix".
-        self.seen = {}
+        # Scores for the whole query and for each term. After a refresh only changed panes are
+        # matched again, and typing on reuses shared terms: "fix r" keeps what "fix" matched.
+        self.scores = {}
         kept = previous.terms if previous else {}
         self.terms = {term: kept.get(term, {}) for terms in self.sets for term in terms}
 
     def __bool__(self):
         return bool(self.sets)
 
-    def match(self, text):
-        """Return (score, sorted positions) or None, with fzf's extendedMatch semantics."""
-        return remember(self.seen, text, lambda: self.score(text))
-
     def score(self, text):
-        haystacks = []
-
-        def run(term):
-            if not haystacks:
-                normalized = normalize(text)
-                haystacks.extend((text, lower(text), normalized, lower(normalized)))
-            return match_term(term, text, haystacks)
-
-        total, positions = 0, set()
+        """The text's score with fzf's extendedMatch semantics, or None if it doesn't match."""
+        score = self.scores.get(text, MISSING)
+        if score is not MISSING:
+            return score
+        if len(self.scores) > FORGET:
+            self.scores.clear()
+        total = 0
         for terms in self.sets:
             matched = False
             for term in terms:
-                result = remember(self.terms[term], text, lambda term=term: run(term))
-                if result and not term[1]:
-                    total += result[0]
-                    positions.update(result[1])
+                cache = self.terms[term]
+                found = cache.get(text, MISSING)
+                if found is MISSING:
+                    if len(cache) > FORGET:
+                        cache.clear()
+                    found = cache[text] = match_term(term, text, haystacks(text), scoring=True)
+                if found is not None and not term[1]:
+                    total += found
                     matched = True
                     break
-                if not result and term[1]:
+                if found is None and term[1]:
+                    matched = True
+            if not matched:
+                total = None
+                break
+        self.scores[text] = total
+        return total
+
+    def match(self, text):
+        """(score, sorted positions) or None: where the text matched, for highlighting it."""
+        total, positions, forms = 0, set(), haystacks(text)
+        for terms in self.sets:
+            matched = False
+            for term in terms:
+                found = match_term(term, text, forms)
+                if found and not term[1]:
+                    total += found[0]
+                    positions.update(found[1])
+                    matched = True
+                    break
+                if not found and term[1]:
                     matched = True
             if not matched:
                 return None
@@ -373,14 +498,14 @@ class Query:
 
 
 def rank(items, query, text=lambda item: item):
-    """Matching items as (item, positions), best score first; ties keep input order."""
+    """The items that match, best score first; ties keep input order."""
     query = query if isinstance(query, Query) else Query(query)
     if not query:
-        return [(item, []) for item in items]
-    scored = []
+        return list(items)
+    score, scored = query.score, []
     for order, item in enumerate(items):
-        result = query.match(text(item))
-        if result:
-            scored.append((-result[0], order, item, result[1]))
-    scored.sort(key=lambda row: row[:2])
-    return [(item, positions) for _, _, item, positions in scored]
+        found = score(text(item))
+        if found is not None:
+            scored.append((-found, order, item))
+    scored.sort(key=lambda row: (row[0], row[1]))
+    return [item for _, _, item in scored]

@@ -6,6 +6,7 @@ and returns an action ("accept", "run", "close" or "quit") for the app to carry 
 
 import re
 import time
+from collections import Counter
 
 from herdscope import fuzzy, inventory
 
@@ -18,20 +19,22 @@ QUIT_KEYS = ("esc", "ctrl-c", "ctrl-g", "ctrl-q")
 ACCEPT_KEYS = ("enter", "ctrl-y")
 STEPS = {"up": -1, "ctrl-p": -1, "ctrl-k": -1, "down": 1, "ctrl-n": 1, "ctrl-j": 1}
 DOUBLE_CLICK = 0.4  # Seconds between the clicks of a double-click.
+RECENT = 32  # Queries whose matches are kept, so backspacing over what was typed costs nothing.
 
 
-def shows(kind, entry):
-    """Whether a tab of `kind` lists `entry`: All shows every pane, never commands."""
-    return entry["kind"] == kind if kind else entry["kind"] != "command"
+def tally(kinds):
+    """How many of `kinds` each tab lists: All, Agents, Terminals, Commands."""
+    counts = Counter(kinds)
+    return [counts.total() - counts["command"], counts["agent"], counts["terminal"], counts["command"]]
 
 
 class Item:
     """An entry as the picker shows and searches it, built once per change to the entry."""
 
-    __slots__ = ("entry", "fields", "spans", "text")
+    __slots__ = ("entry", "fields", "id", "kind", "spans", "text")
 
     def __init__(self, entry):
-        self.entry = entry
+        self.entry, self.id, self.kind = entry, entry["id"], entry["kind"]
         if entry["kind"] == "error":
             values = {"label": entry["machine"], "status": entry["status"], "path": entry["error"]}
         elif entry["kind"] == "command":
@@ -98,25 +101,33 @@ class View:
         self.key = None
         self.compiled = fuzzy.Query("")
         self.matched = []
+        self.recent = (None, {})  # Matches of recent queries, for one version of the inventory.
+        self.marks = {}  # Highlights of rows drawn since the matches last changed.
         self.tally = [0] * len(SCOPES)
         self.rows = []
         self.lines = []
         self.cols = (None, [])
 
     def results(self, version, entries):
-        """Rows for the current scope and query as (item, highlights), best first.
+        """The current tab's matches for the query, best first, as Items.
 
         This runs every frame, so it only works when the inventory, query or tab changed, and
         then only on what changed: thousands of panes must not cost every frame or key press.
         """
         if self.items[0] != version:
-            # A refresh rebuilds only the items of panes that changed.
-            old = {item.entry["id"]: item for item in self.items[1]}
+            # A refresh rebuilds only the items of panes that changed. The inventory hands back
+            # the same entry for a pane that didn't, so most need no comparing at all.
+            old = {item.id: item for item in self.items[1]}
             self.items = (
                 version,
-                [item if (item := old.get(entry["id"])) and item.entry == entry else Item(entry) for entry in entries],
+                [
+                    item
+                    if (item := old.get(entry["id"])) and (item.entry is entry or item.entry == entry)
+                    else Item(entry)
+                    for entry in entries
+                ],
             )
-            self.totals = [sum(shows(kind, entry) for entry in entries) for kind in SCOPE_KINDS]
+            self.totals = tally(entry["kind"] for entry in entries)
             self.loading = any(entry.get("status") == "connecting" or entry.get("stale") for entry in entries)
         query = self.search
         key = (version, query, self.scope)
@@ -124,52 +135,72 @@ class View:
             reset = not self.key or self.key[1:] != key[1:]
             if not self.key or self.key[:2] != key[:2]:
                 self.matched = self.match(version, query)
-                self.tally = [sum(shows(kind, item.entry) for item, _ in self.matched) for kind in SCOPE_KINDS]
-            kind = SCOPE_KINDS[self.scope]
-            self.rows = [row for row in self.matched if shows(kind, row[0].entry)]
+                self.marks = {}
+                self.tally = tally(item.kind for item in self.matched)
+            # All lists every pane but no commands; the other tabs, one kind each.
+            if scope := SCOPE_KINDS[self.scope]:
+                self.rows = [item for item in self.matched if item.kind == scope]
+            else:
+                self.rows = [item for item in self.matched if item.kind != "command"]
             self.lines = self.spaced()
             self.key = key
             if reset:
                 # Like fzf: a new query puts the cursor on the best match.
                 self.selected, self.index, self.offset = None, 0, 0
-        if self.index >= len(self.rows) or self.rows[self.index][0].entry["id"] != self.selected:
-            ids = {item.entry["id"]: i for i, (item, _) in enumerate(self.rows)}
+        if self.index >= len(self.rows) or self.rows[self.index].id != self.selected:
             # Live refreshes keep the selected destination; if it vanished, keep its position.
             before = self.selected
-            self.index = ids.get(self.selected, min(self.index, max(0, len(self.rows) - 1)))
-            self.selected = self.rows[self.index][0].entry["id"] if self.rows else None
+            found = next((i for i, item in enumerate(self.rows) if item.id == before), None) if before else None
+            self.index = min(self.index, max(0, len(self.rows) - 1)) if found is None else found
+            self.selected = self.rows[self.index].id if self.rows else None
             if self.selected != before:
                 self.preview_scroll = 0  # A different pane's preview starts at its newest output.
         return self.rows
 
     def match(self, version, query):
         """Every kind's matches, ranked once so each tab can count its own."""
-        candidates = self.items[1]
-        before = self.key[1] if self.key and self.key[0] == version else ""
-        if before and query.startswith(before) and not any(char in query for char in "!|\\$'"):
-            # Typing on can only narrow plain terms' matches, so only those need checking, as in fzf.
-            kept = {id(item) for item, _ in self.matched}
-            candidates = [item for item in candidates if id(item) in kept]
         if self.compiled.text != query:
             self.compiled = fuzzy.Query(query, self.compiled)
-        return [
-            (item, item.highlights(positions))
-            for item, positions in fuzzy.rank(candidates, self.compiled, lambda i: i.text)
-        ]
+        if self.recent[0] != version:
+            self.recent = (version, {})
+        recent = self.recent[1]
+        matched = recent.pop(query, None)
+        if matched is None:
+            candidates = self.items[1]
+            before = self.key[1] if self.key and self.key[0] == version else ""
+            if before and query.startswith(before) and not any(char in query for char in "!|\\$'"):
+                # Typing on can only narrow plain terms' matches, so only those need checking, as in fzf.
+                kept = set(map(id, self.matched))
+                candidates = [item for item in candidates if id(item) in kept]
+            matched = fuzzy.rank(candidates, self.compiled, lambda item: item.text)
+        recent[query] = matched
+        if len(recent) > RECENT:
+            del recent[next(iter(recent))]
+        return matched
+
+    def highlights(self, item):
+        """Where the query matched `item`, as {field: positions}: worked out only for rows drawn."""
+        marks = self.marks.get(item)
+        if marks is None:
+            found = self.compiled.match(item.text) if self.compiled else None
+            marks = self.marks[item] = item.highlights(found[1]) if found else {}
+        return marks
 
     def spaced(self):
         """Row indexes to draw, with None for a blank line between kinds while browsing everything."""
+        if self.search or self.scope not in (0, COMMANDS):
+            return range(len(self.rows))
         lines, previous = [], None
-        for i, (item, _) in enumerate(self.rows):
-            group = item.entry.get("category") or item.entry["kind"]
-            if not self.search and self.scope in (0, COMMANDS) and previous and group != previous:
+        for i, item in enumerate(self.rows):
+            group = item.entry.get("category") or item.kind
+            if previous and group != previous:
                 lines.append(None)
             previous = group
             lines.append(i)
         return lines
 
     def current(self):
-        return self.rows[self.index][0] if self.rows else None
+        return self.rows[self.index] if self.rows else None
 
     @property
     def search(self):
@@ -191,12 +222,12 @@ class View:
         self.prompt = None
 
     def find(self, entry_id):
-        return next((item for item, _ in self.rows if item.entry["id"] == entry_id), None)
+        return next((item for item in self.rows if item.id == entry_id), None)
 
     def move(self, step):
         if self.rows:
             self.index = max(0, min(len(self.rows) - 1, self.index + step))
-            self.selected = self.rows[self.index][0].entry["id"]
+            self.selected = self.rows[self.index].id
             self.preview_scroll = 0
 
     def say(self, text, role="overlay1", seconds=3.5):

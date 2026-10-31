@@ -515,7 +515,8 @@ def draw_results(p, view, rows, top, bottom, x, width, now, wall, selected_bg):
     backgrounds = ("sidebar_bg", selected_bg)
     for n, line in enumerate(lines[view.offset : view.offset + visible]):
         if line is not None:
-            item, hl = rows[line]
+            item = rows[line]
+            hl = view.highlights(item)
             draw_row(p, top + n, x, width, item, hl, line == view.index, cols, now, wall, backgrounds)
             view.hits["rows"][top + n] = line
     if len(lines) > visible:
@@ -580,13 +581,14 @@ def draw(canvas, palette, view, entries, rows, now, previewer, loading=False, wa
     footer(p, view, hints_y, lx, lw, "sidebar_bg")
     # Spinners are all that moves by itself, so the loop wakes at their pace only while one shows.
     view.hits["animated"] = loading or any(
-        rows[line][0].entry.get("status") in ("working", "connecting") for line in view.hits["rows"].values()
+        rows[line].entry.get("status") in ("working", "connecting") for line in view.hits["rows"].values()
     )
     previewing = False
     if preview_area:
         view.hits["preview"] = preview_area
         if rows:
-            item, hl = rows[view.index]
+            item = rows[view.index]
+            hl = view.highlights(item)
             inset = 3 if arrangement == "beside" else 2
             if item.entry["kind"] == "command":
                 draw_command_preview(p, view, item, hl, preview_area, entries, now, inset)
