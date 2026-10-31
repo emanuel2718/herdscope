@@ -1,33 +1,25 @@
-"""Herdscope: a search panel of agents, terminals and Herdr commands beside a live preview."""
+"""Drawing the picker: the list panel, the preview, and the prompt, tabs and footer around them.
 
-import re
-import threading
+Everything is drawn into a Canvas every frame; the terminal then writes only what changed.
+"""
+
 import time
 
-import commands
-import fuzzy
-import picker
-import theme
-from terminal_ui import Style, Terminal, clip, parse_ansi, text_width
+from herdscope import inventory
+from herdscope.terminal import Style, clip, text_width
+from herdscope.view import COMMANDS, SCOPE_KINDS, SCOPES
 
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 SYMBOLS = {"blocked": "▲", "working": "◐", "done": "✓", "idle": "○", "unknown": "?"}
 STATUS_ROLE = {"blocked": "red", "working": "yellow", "done": "green", "idle": "overlay1", "unknown": "overlay0",
                "connecting": "overlay1", "offline": "red"}
-SCOPES = ("All", "Agents", "Terminals", "Commands")
-SCOPE_KINDS = (None, "agent", "terminal", "command")
-COMMANDS = SCOPE_KINDS.index("command")
 EMPTY = {None: ("No panes yet", ""), "agent": ("No agents running", "Agents you start in Herdr show up here."),
          "terminal": ("No terminals", ""), "command": ("No commands", "")}
-FIELDS = ("label", "detail", "place", "agent", "status", "path", "machine", "category", "target", "aliases")
-QUIT_KEYS = ("esc", "ctrl-c", "ctrl-g", "ctrl-q")
-ACCEPT_KEYS = ("enter", "ctrl-y")
 HINTS = {"panes": (("↵", "go"), ("⇥", "scope"), (">", "commands"), ("^/", "preview"), ("⇧↑↓", "scroll"),
                    ("^x", "close"), ("esc", "quit")),
          "commands": (("↵", "run"), ("⇥", "scope"), ("⌫", "back to panes"), ("esc", "quit")),
          "input": (("↵", "apply"), ("esc", "back"), ("^u", "clear"))}
 STATUS_WIDTH = len("working 11mo")
-PREVIEWS = 32  # Panes whose latest preview is kept, for flicking back to without a wait.
 
 
 class Palette:
@@ -47,49 +39,8 @@ class Palette:
         return self.cache[key]
 
 
-# Display model -------------------------------------------------------------------------------
-
-def shows(kind, entry):
-    """Whether a tab of `kind` lists `entry`: All shows every pane, never commands."""
-    return entry["kind"] == kind if kind else entry["kind"] != "command"
-
-
-class Item:
-    __slots__ = ("entry", "fields", "text", "spans")
-
-    def __init__(self, entry):
-        self.entry = entry
-        if entry["kind"] == "error":
-            values = {"label": entry["machine"], "status": entry["status"], "path": entry["error"]}
-        elif entry["kind"] == "command":
-            values = {"label": entry["title"], "category": entry["category"], "target": entry["target"],
-                      "aliases": entry["aliases"]}
-        else:
-            label, detail = picker.labels(entry)
-            values = {"label": label, "detail": detail, "place": f"{entry['workspace']}:{entry['tab']}",
-                      "agent": entry["agent"], "status": entry["status"],
-                      "path": picker.display_path(entry) if entry["kind"] == "agent" else "",
-                      "machine": entry["machine"]}
-        self.fields, self.spans, parts, at = values, {}, [], 0
-        # One search line, as fzf sees it; spans map match positions back to fields.
-        for name in FIELDS:
-            value = values.get(name, "")
-            if value:
-                self.spans[name] = (at, at + len(value))
-                parts.append(value)
-                at += len(value) + 1
-        self.text = " ".join(parts)
-
-    def highlights(self, positions):
-        result = {}
-        for position in positions:
-            for name, (start, end) in self.spans.items():
-                if start <= position < end:
-                    result.setdefault(name, set()).add(position - start)
-        return result
-
-
 def status_icon(entry, now, symbols=False):
+    """The glyph before a row and its role: status for agents, spinning while working."""
     status = entry.get("status")
     if entry["kind"] == "command":
         return entry["glyph"], "red" if entry.get("confirm") else "overlay1"
@@ -112,262 +63,9 @@ def duration(seconds):
     return "now"
 
 
-# State ---------------------------------------------------------------------------------------
-
-class View:
-    def __init__(self):
-        self.query = ""
-        self.cursor = 0
-        self.scope = 0
-        self.selected = None
-        self.index = 0
-        self.offset = 0
-        self.preview = True
-        self.preview_scroll = 0
-        self.confirm = None
-        self.closing = None
-        self.running = None
-        self.prompt = None  # The command being given text, while the prompt is its input.
-        self.stash = ("", 0)  # The search, put aside while the prompt is an input.
-        self.back = 0  # The tab Backspace returns to from Commands.
-        self.notice = None
-        self.click = (0, None)
-        self.hits = {}
-        self.page = 10
-        self.items = (None, [])
-        self.totals = [0] * len(SCOPES)
-        self.loading = False
-        self.key = None
-        self.compiled = fuzzy.Query("")
-        self.matched = []
-        self.tally = [0] * len(SCOPES)
-        self.rows = []
-        self.lines = []
-        self.cols = (None, [])
-
-    def results(self, version, entries):
-        """Rows for the current scope and query as (item, highlights), best first.
-
-        This runs every frame, so it only works when the inventory, query or tab changed, and
-        then only on what changed: thousands of panes must not cost every frame or key press.
-        """
-        if self.items[0] != version:
-            # A refresh rebuilds only the items of panes that changed.
-            old = {item.entry["id"]: item for item in self.items[1]}
-            self.items = (version, [item if (item := old.get(entry["id"])) and item.entry == entry else Item(entry)
-                                    for entry in entries])
-            self.totals = [sum(shows(kind, entry) for entry in entries) for kind in SCOPE_KINDS]
-            self.loading = any(entry.get("status") == "connecting" or entry.get("stale") for entry in entries)
-        query = self.search
-        key = (version, query, self.scope)
-        if key != self.key:
-            reset = not self.key or self.key[1:] != key[1:]
-            if not self.key or self.key[:2] != key[:2]:
-                self.matched = self.match(version, query)
-                self.tally = [sum(shows(kind, item.entry) for item, _ in self.matched) for kind in SCOPE_KINDS]
-            kind = SCOPE_KINDS[self.scope]
-            self.rows = [row for row in self.matched if shows(kind, row[0].entry)]
-            self.lines = self.spaced()
-            self.key = key
-            if reset:
-                # Like fzf: a new query puts the cursor on the best match.
-                self.selected, self.index, self.offset = None, 0, 0
-        if self.index >= len(self.rows) or self.rows[self.index][0].entry["id"] != self.selected:
-            ids = {item.entry["id"]: i for i, (item, _) in enumerate(self.rows)}
-            # Live refreshes keep the selected destination; if it vanished, keep its position.
-            before = self.selected
-            self.index = ids.get(self.selected, min(self.index, max(0, len(self.rows) - 1)))
-            self.selected = self.rows[self.index][0].entry["id"] if self.rows else None
-            if self.selected != before:
-                self.preview_scroll = 0  # A different pane's preview starts at its newest output.
-        return self.rows
-
-    def match(self, version, query):
-        """Every kind's matches, ranked once so each tab can count its own."""
-        candidates = self.items[1]
-        before = self.key[1] if self.key and self.key[0] == version else ""
-        if before and query.startswith(before) and not any(char in query for char in "!|\\$'"):
-            # Typing on can only narrow plain terms' matches, so only those need checking, as in fzf.
-            kept = {id(item) for item, _ in self.matched}
-            candidates = [item for item in candidates if id(item) in kept]
-        if self.compiled.text != query:
-            self.compiled = fuzzy.Query(query, self.compiled)
-        return [(item, item.highlights(positions))
-                for item, positions in fuzzy.rank(candidates, self.compiled, lambda i: i.text)]
-
-    def spaced(self):
-        """Row indexes to draw, with None for a blank line between kinds while browsing everything."""
-        lines, previous = [], None
-        for i, (item, _) in enumerate(self.rows):
-            group = item.entry.get("category") or item.entry["kind"]
-            if not self.search and self.scope in (0, COMMANDS) and previous and group != previous:
-                lines.append(None)
-            previous = group
-            lines.append(i)
-        return lines
-
-    def current(self):
-        return self.rows[self.index][0] if self.rows else None
-
-    @property
-    def search(self):
-        """The text results are ranked by: the query, or the one put aside while giving input."""
-        return self.stash[0] if self.prompt else self.query
-
-    def counts(self):
-        """Matches per tab: All, Agents, Terminals, Commands."""
-        return self.tally
-
-    def columns(self, width):
-        """The tab's right-hand columns, measured once per inventory and width rather than every frame."""
-        key = (self.items[0], self.scope == COMMANDS, width)
-        if self.cols[0] != key:
-            self.cols = (key, (command_columns if self.scope == COMMANDS else columns)(self.items[1], width))
-        return self.cols[1]
-
-    def ask(self, entry):
-        """Turn the prompt into an input for `entry`, starting from its current value."""
-        self.prompt, self.stash = entry["id"], (self.query, self.cursor)
-        self.query = entry["ask"]
-        self.cursor = len(self.query)
-
-    def unask(self):
-        self.query, self.cursor = self.stash
-        self.prompt = None
-
-    def find(self, entry_id):
-        return next((item for item, _ in self.rows if item.entry["id"] == entry_id), None)
-
-    def move(self, step):
-        if self.rows:
-            self.index = max(0, min(len(self.rows) - 1, self.index + step))
-            self.selected = self.rows[self.index][0].entry["id"]
-            self.preview_scroll = 0
-
-    def say(self, text, role="overlay1", seconds=3.5):
-        self.notice = (text, role, time.monotonic() + seconds)
-
-    def edit(self, name, text=None):
-        """Apply a line-editing key; returns True when handled."""
-        query, cursor = self.query, self.cursor
-        left = query[:cursor]
-        word_start = len(re.sub(r"\S*\s*$", "", left)) if left else 0
-        word_end = cursor + len(re.match(r"\s*\S*", query[cursor:]).group())
-        if text is not None:
-            query, cursor = left + text + query[cursor:], cursor + len(text)
-        elif name in ("left", "ctrl-b"):
-            cursor = max(0, cursor - 1)
-        elif name in ("right", "ctrl-f"):
-            cursor = min(len(query), cursor + 1)
-        elif name in ("home", "ctrl-a"):
-            cursor = 0
-        elif name in ("end", "ctrl-e"):
-            cursor = len(query)
-        elif name in ("alt-b", "ctrl-left", "alt-left"):
-            cursor = word_start
-        elif name in ("alt-f", "ctrl-right", "alt-right"):
-            cursor = word_end
-        elif name == "backspace":
-            query, cursor = query[:max(0, cursor - 1)] + query[cursor:], max(0, cursor - 1)
-        elif name in ("delete", "ctrl-d"):
-            query = left + query[cursor + 1:]
-        elif name == "ctrl-u":
-            query, cursor = query[cursor:], 0
-        elif name in ("ctrl-w", "alt-backspace"):
-            query, cursor = query[:word_start] + query[cursor:], word_start
-        elif name == "alt-d":
-            query = left + query[word_end:]
-        else:
-            return False
-        self.query, self.cursor = query, cursor
-        return True
-
-
-class Previewer:
-    """Fetch the selected pane's recent output off the UI thread, at a live cadence."""
-
-    def __init__(self, base, read=None, changed=None):
-        self.halt = threading.Event()  # Cancels a slow remote read on exit.
-        self.base, self.read = base, read or (lambda entry, lines: picker.read(entry, lines, self.halt))
-        self.changed = changed or (lambda: None)  # Called when a preview's content changes.
-        self.condition = threading.Condition()
-        self.target = None
-        self.asked = 0
-        self.cache = {}  # The latest read of recently previewed panes, oldest first.
-        self.last = None  # (pane, output) as last read, so unchanged output isn't parsed again.
-        self.stopped = False
-        self.thread = threading.Thread(target=self.run, daemon=True)
-
-    def __enter__(self):
-        self.thread.start()
-        return self
-
-    def __exit__(self, *exc):
-        self.halt.set()
-        with self.condition:
-            self.stopped = True
-            self.condition.notify()
-        self.thread.join(timeout=1)
-
-    def idle(self):
-        """Stop polling: nothing is being previewed (hidden, a command, or no rows)."""
-        with self.condition:
-            self.target = None
-
-    def want(self, entry, lines):
-        """Called every frame; only a new pane or a deeper scroll interrupts the cadence."""
-        with self.condition:
-            old = self.target
-            if not old or old[0]["id"] != entry["id"] or old[1] < lines:
-                if not old or old[0]["id"] != entry["id"]:
-                    self.asked = time.monotonic()
-                self.target = (entry, lines)
-                self.condition.notify()
-
-    def get(self, entry_id):
-        """(lines, error, lines asked for) from the latest read of that pane, or None."""
-        with self.condition:
-            return self.cache.get(entry_id)
-
-    def waiting(self):
-        """Seconds since the current pane was first asked for."""
-        return time.monotonic() - self.asked
-
-    def run(self):
-        while True:
-            with self.condition:
-                if self.stopped:
-                    return
-                target = self.target
-            if target:
-                entry, lines = target
-                try:
-                    text = self.read(entry, lines)
-                    # Unchanged output costs no parsing and no redraw.
-                    unchanged = self.last == (entry["id"], text)
-                    result = None if unchanged else (parse_ansi(text, self.base), None, lines)
-                    self.last = (entry["id"], text)
-                except Exception as error:  # noqa: BLE001 - a dead preview thread would stop every preview.
-                    self.last = None
-                    result = ([], picker.clean(error) or "Preview unavailable", lines)
-                if result:
-                    with self.condition:
-                        self.cache.pop(entry["id"], None)
-                        self.cache[entry["id"]] = result
-                        if len(self.cache) > PREVIEWS:
-                            # Scrolling past hundreds of panes mustn't keep every one's output.
-                            del self.cache[next(iter(self.cache))]
-                    self.changed()
-            with self.condition:
-                if self.stopped:
-                    return
-                if self.target is target:
-                    self.condition.wait(3 if target and target[0].get("machine_id") else 0.25)
-
-
-# Drawing -------------------------------------------------------------------------------------
-
 class Painter:
+    """Draws text in theme roles onto a canvas."""
+
     def __init__(self, canvas, palette):
         self.canvas, self.palette = canvas, palette
 
@@ -408,6 +106,14 @@ def command_columns(items, width):
     chosen = [(name, min(cap, max((text_width(entry[name]) for entry in found), default=0)))
               for name, cap in (("category", 10), ("target", 24), ("binding", 8))]
     return fit(chosen, width, ("category", "target", "binding"), 20)
+
+
+def measured_columns(view, width):
+    """The tab's right-hand columns, measured once per inventory and width rather than every frame."""
+    key = (view.items[0], view.scope == COMMANDS, width)
+    if view.cols[0] != key:
+        view.cols = (key, (command_columns if view.scope == COMMANDS else columns)(view.items[1], width))
+    return view.cols[1]
 
 
 def fit(chosen, width, order, room):
@@ -498,7 +204,7 @@ def draw_row(p, y, x, width, item, hl, selected, cols, now, wall, backgrounds):
 def draw_split(p, y, x, width, height, entry, entries):
     """The pane you came from and, dashed, the one the split adds beside or below it."""
     pane = next((e for e in entries if e["id"] == entry["pane"]), None)
-    label = picker.labels(pane)[0] if pane else entry["target"]
+    label = inventory.labels(pane)[0] if pane else entry["target"]
     if entry["split"] == "right":
         half = width // 2
         boxes = [(y, x, height, half, label, False), (y, x + half, height, width - half, "new pane", True)]
@@ -557,7 +263,7 @@ def draw_command_preview(p, view, item, hl, area, entries, now, inset):
     typed = view.query.strip() if asking else None
     if entry.get("folder"):
         at = p.text(y + 1, x, "Starts in  ", "overlay1")
-        p.text(y + 1, at, picker.display_path({"cwd": entry["folder"]}), "text", width=max(0, x + width - at))
+        p.text(y + 1, at, inventory.display_path({"cwd": entry["folder"]}), "text", width=max(0, x + width - at))
         y += 2
     if asking and "was" in entry and "sidebar" not in entry:
         at = p.text(y + 1, x, entry["was"], "overlay0", width=width // 2)
@@ -587,7 +293,7 @@ def draw_command_preview(p, view, item, hl, area, entries, now, inset):
         for pane in filter(None, map(by_id.get, entry["affects"])):
             if y >= bottom:
                 break
-            label, detail = picker.labels(pane)
+            label, detail = inventory.labels(pane)
             glyph, role = status_icon(pane, now)
             p.text(y, x + 2, glyph, role, bold=True)
             at = p.text(y, x + 4, label, "text", width=width - 4)
@@ -761,7 +467,7 @@ def draw_results(p, view, rows, top, bottom, x, width, now, wall, selected_bg):
         elif selected_line > view.offset + visible - 1 - margin:
             view.offset = selected_line - visible + 1 + margin
     view.offset = max(0, min(view.offset, max(0, len(lines) - visible)))
-    cols = view.columns(width - 1)
+    cols = measured_columns(view, width - 1)
     backgrounds = ("sidebar_bg", selected_bg)
     for n, line in enumerate(lines[view.offset:view.offset + visible]):
         if line is not None:
@@ -849,196 +555,3 @@ def draw_message(canvas, palette, lines):
         p.text(top + 1 + i, left + 2, text, role, "surface0", inner - 4, bold=i == 0)
     canvas.cursor = None
 
-
-# Input ---------------------------------------------------------------------------------------
-
-def handle(view, event, now):
-    """Update the view for one input event; returns "quit", "accept", "close", "run" or None."""
-    kind, value = event
-    if view.prompt:
-        return answer(view, event)
-    if view.confirm:
-        # Only y confirms, as the footer says. Act on exactly what was asked about,
-        # even if a refresh moved the selection.
-        confirmed = event in (("text", "y"), ("text", "Y"))
-        chosen, view.confirm = view.confirm if confirmed else None, None
-        if not chosen:
-            return None
-        if chosen.startswith("command:"):
-            view.running = chosen
-            return "run"
-        view.closing = chosen
-        return "close"
-    if kind == "mouse":
-        return mouse(view, value, now)
-    if kind in ("text", "paste"):
-        text = " ".join(value.split()) if kind == "paste" else value
-        if text.startswith(">") and not view.query and view.scope != COMMANDS:
-            # ">" opens Commands and becomes the prompt symbol instead of part of the query.
-            view.back, view.scope, text = view.scope, COMMANDS, text[1:]
-        view.edit(None, text)
-        return None
-    if value in QUIT_KEYS:
-        return "quit"
-    if value in ACCEPT_KEYS:
-        if not view.rows:
-            return None
-        entry = view.current().entry
-        if entry["kind"] != "command":
-            return "accept"
-        if entry["ask"] is not None:
-            view.ask(entry)
-        elif entry["confirm"]:
-            view.confirm = view.selected
-        else:
-            view.running = view.selected
-            return "run"
-        return None
-    steps = {"up": -1, "ctrl-p": -1, "ctrl-k": -1, "down": 1, "ctrl-n": 1, "ctrl-j": 1,
-             "pgup": -view.page, "pgdn": view.page}
-    if value in steps:
-        view.move(steps[value])
-    elif value in ("tab", "shift-tab"):
-        view.scope = (view.scope + (1 if value == "tab" else -1)) % len(SCOPES)
-    elif value in ("ctrl-/", "alt-p"):
-        view.preview = not view.preview
-    elif value in ("shift-up", "shift-down", "shift-pgup", "shift-pgdn"):
-        step = 3 if value in ("shift-up", "shift-down") else max(1, view.page // 2)
-        view.preview_scroll = max(0, view.preview_scroll + (step if "up" in value else -step))
-    elif value == "ctrl-x" and view.rows:
-        entry = view.current().entry
-        if entry.get("machine_id"):
-            view.say("Panes on other machines can't be closed from here", "red")
-        elif entry["kind"] in ("agent", "terminal"):
-            view.confirm = view.selected
-    elif value == "backspace" and view.scope == COMMANDS and not view.query:
-        view.scope = view.back if view.back != COMMANDS else 0  # Like deleting the ">".
-    else:
-        view.edit(value)
-    return None
-
-
-def answer(view, event):
-    """Keys while a command asks for text: edit it, Enter runs the command, Esc goes back to the list."""
-    kind, value = event
-    if kind in ("text", "paste"):
-        view.edit(None, " ".join(value.split()) if kind == "paste" else value)
-    elif value in ACCEPT_KEYS:
-        view.running = view.prompt
-        return "run"
-    elif value in QUIT_KEYS:
-        view.unask()
-    elif kind == "key":
-        view.edit(value)
-    return None
-
-
-def mouse(view, value, now):
-    button, x, y, pressed = value
-    preview = view.hits.get("preview")
-    in_preview = preview and preview[0] <= x < preview[0] + preview[2] and preview[1] <= y < preview[1] + preview[3]
-    if button & 64:  # Wheel
-        up = not button & 1
-        if in_preview:
-            view.preview_scroll = max(0, view.preview_scroll + (3 if up else -3))
-        else:
-            view.move(-1 if up else 1)
-        return None
-    if not pressed or button & 3:
-        return None
-    if y == view.hits.get("tabs_y"):
-        for start, end, scope in view.hits["tabs"]:
-            if start <= x < end:
-                view.scope = scope
-        return None
-    if y in view.hits["rows"]:
-        index = view.hits["rows"][y]
-        double = view.click[1] == index and now - view.click[0] < 0.4
-        view.click = (now, index)
-        view.move(index - view.index)
-        return handle(view, ("key", "enter"), now) if double else None  # Exactly what Enter does.
-    return None
-
-
-def run(inventory):
-    """The popup: until the user picks a pane, runs a command or quits."""
-    with Terminal() as screen:
-        settings = theme.config()
-        palette = Palette(theme.load(settings, screen.colors()))
-        base = Style(palette.tokens["text"], palette.tokens["panel_bg"])
-        catalog = commands.load(inventory.snapshot, settings)
-        # New panes, statuses and preview output redraw at once instead of on the next tick.
-        inventory.changed = screen.wake
-        try:
-            with Previewer(base, changed=screen.wake) as previewer:
-                loop(inventory, screen, palette, View(), previewer, catalog)
-        finally:
-            inventory.changed = lambda: None  # The screen is about to close.
-
-
-def loop(inventory, screen, palette, view, previewer, catalog):
-    """Draw, wait for input and act, until the popup should close."""
-    while True:
-        now = time.monotonic()
-        version, entries = inventory.current()
-        entries = entries + catalog
-        rows = view.results(version, entries)
-        if view.confirm and not view.find(view.confirm):
-            view.confirm = None  # What was asked about is gone: nothing left to confirm.
-        draw(screen, palette, view, entries, rows, now, previewer, view.loading)
-        screen.refresh()
-        try:
-            # Spinners advance every 0.1 s: wake for the next frame, not sooner.
-            event = screen.event(0.1 - now % 0.1 + 0.002 if view.hits.get("animated") else 0.25)
-        except EOFError:
-            return
-        if not event:
-            continue
-        action = handle(view, event, time.monotonic())  # The time it arrived, for double-clicks.
-        if action == "quit":
-            return
-        if action == "run":
-            item = view.find(view.running)
-            try:
-                if not item:
-                    raise RuntimeError("That command is no longer available")
-                item.entry["run"](view.query if view.prompt else None)
-            except picker.ERRORS as error:
-                view.say(picker.clean(error), "red", 5)
-                inventory.poke()
-                continue
-            return
-        if action == "close":
-            item = view.find(view.closing)
-            try:
-                if not item:
-                    raise RuntimeError("That pane is already gone")
-                picker.close(item.entry)
-                view.say(f"Closed {item.fields['label']}")
-            except picker.ERRORS as error:
-                view.say(picker.clean(error), "red")
-            inventory.poke()
-        if action == "accept":
-            entry = view.current().entry
-            if entry["kind"] == "error":
-                view.say(entry["error"], "red")
-                continue
-            try:
-                picker.focus(entry)
-            except picker.ERRORS as error:
-                view.say(picker.clean(error), "red", 5)
-                inventory.poke()
-                continue
-            if entry.get("machine_id"):
-                # Herdr has no plugin API to switch the client's displayed machine.
-                draw_message(screen, palette, [
-                    (f"Focused {view.current().fields['label']}", "text"),
-                    (f"Select {entry['machine']} in Herdr's sidebar to see it.", "subtext0"),
-                    ("Press any key to close", "overlay0")])
-                screen.refresh()
-                try:
-                    while not screen.event(1):
-                        pass
-                except EOFError:
-                    pass
-            return

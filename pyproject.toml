@@ -1,0 +1,20 @@
+# Herdscope runs straight from its checkout as a Herdr plugin, so this file only configures tools.
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I", "UP", "SIM", "RUF", "PLC0415"]
+ignore = [
+    "B905",    # zip() without strict=: lengths are known to match.
+    "RUF001",  # Ambiguous characters: the UI draws with Unicode glyphs on purpose.
+    "SIM105",  # contextlib.suppress isn't clearer for a single statement with an explanation.
+]
+
+[tool.ruff.lint.per-file-ignores]
+"herdscope/__main__.py" = ["PLC0415", "UP036"]  # Imports per action; parses on old Pythons to say they're too old.
+"tests/*" = ["E731", "PLC0415", "RUF005", "RUF012", "RUF059", "SIM117"]  # Terse fixtures read better in tests.
+
+[tool.ruff.lint.isort]
+known-first-party = ["herdscope", "tests"]

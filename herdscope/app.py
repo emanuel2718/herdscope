@@ -1,0 +1,188 @@
+"""The popup itself: draw, wait for input, act, until the user picks a pane, runs a command or quits."""
+
+import threading
+import time
+from contextlib import suppress
+
+from herdscope import commands, herdr, inventory, render, theme
+from herdscope.render import Palette
+from herdscope.terminal import Style, Terminal, parse_ansi
+from herdscope.view import View, handle
+
+PREVIEWS = 32  # Panes whose latest preview is kept, for flicking back to without a wait.
+LOCAL_CADENCE = 0.25  # Seconds between reads of a local pane's preview.
+REMOTE_CADENCE = 3  # The same for a pane on another machine, a herdr process and an SSH session each.
+
+
+class Previewer:
+    """Fetch the selected pane's recent output off the UI thread, at a live cadence."""
+
+    def __init__(self, base, read=None, changed=None):
+        self.halt = threading.Event()  # Cancels a slow remote read on exit.
+        self.base, self.read = base, read or (lambda entry, lines: inventory.read(entry, lines, self.halt))
+        self.changed = changed or (lambda: None)  # Called when a preview's content changes.
+        self.condition = threading.Condition()
+        self.target = None
+        self.asked = 0
+        self.cache = {}  # The latest read of recently previewed panes, oldest first.
+        self.last = None  # (pane, output) as last read, so unchanged output isn't parsed again.
+        self.stopped = False
+        self.thread = threading.Thread(target=self.run, daemon=True)
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.halt.set()
+        with self.condition:
+            self.stopped = True
+            self.condition.notify()
+        self.thread.join(timeout=1)
+
+    def idle(self):
+        """Stop polling: nothing is being previewed (hidden, a command, or no rows)."""
+        with self.condition:
+            self.target = None
+
+    def want(self, entry, lines):
+        """Called every frame; only a new pane or a deeper scroll interrupts the cadence."""
+        with self.condition:
+            old = self.target
+            if not old or old[0]["id"] != entry["id"] or old[1] < lines:
+                if not old or old[0]["id"] != entry["id"]:
+                    self.asked = time.monotonic()
+                self.target = (entry, lines)
+                self.condition.notify()
+
+    def get(self, entry_id):
+        """(lines, error, lines asked for) from the latest read of that pane, or None."""
+        with self.condition:
+            return self.cache.get(entry_id)
+
+    def waiting(self):
+        """Seconds since the current pane was first asked for."""
+        return time.monotonic() - self.asked
+
+    def run(self):
+        while True:
+            with self.condition:
+                if self.stopped:
+                    return
+                target = self.target
+            if target:
+                entry, lines = target
+                try:
+                    text = self.read(entry, lines)
+                    # Unchanged output costs no parsing and no redraw.
+                    unchanged = self.last == (entry["id"], text)
+                    result = None if unchanged else (parse_ansi(text, self.base), None, lines)
+                    self.last = (entry["id"], text)
+                except Exception as error:  # A dead preview thread would stop every preview.
+                    self.last = None
+                    result = ([], herdr.clean(error) or "Preview unavailable", lines)
+                if result:
+                    with self.condition:
+                        self.cache.pop(entry["id"], None)
+                        self.cache[entry["id"]] = result
+                        if len(self.cache) > PREVIEWS:
+                            # Scrolling past hundreds of panes mustn't keep every one's output.
+                            del self.cache[next(iter(self.cache))]
+                    self.changed()
+            with self.condition:
+                if self.stopped:
+                    return
+                if self.target is target:
+                    self.condition.wait(REMOTE_CADENCE if target and target[0].get("machine_id") else LOCAL_CADENCE)
+
+
+def main():
+    """Open the picker on this Herdr server's panes, then on other machines' as they answer."""
+    with inventory.Inventory() as panes:
+        run(panes)
+
+
+def run(panes):
+    """The popup: until the user picks a pane, runs a command or quits."""
+    with Terminal() as screen:
+        settings = theme.config()
+        palette = Palette(theme.load(settings, screen.colors()))
+        base = Style(palette.tokens["text"], palette.tokens["panel_bg"])
+        catalog = commands.load(panes.snapshot, settings)
+        # New panes, statuses and preview output redraw at once instead of on the next tick.
+        panes.changed = screen.wake
+        try:
+            with Previewer(base, changed=screen.wake) as previewer:
+                loop(panes, screen, palette, View(), previewer, catalog)
+        finally:
+            panes.changed = lambda: None  # The screen is about to close.
+
+
+def loop(panes, screen, palette, view, previewer, catalog):
+    """Draw, wait for input and act, until the popup should close."""
+    while True:
+        now = time.monotonic()
+        version, entries = panes.current()
+        entries = entries + catalog
+        rows = view.results(version, entries)
+        if view.confirm and not view.find(view.confirm):
+            view.confirm = None  # What was asked about is gone: nothing left to confirm.
+        render.draw(screen, palette, view, entries, rows, now, previewer, view.loading)
+        screen.refresh()
+        try:
+            # Spinners advance every 0.1 s: wake for the next frame, not sooner.
+            event = screen.event(0.1 - now % 0.1 + 0.002 if view.hits.get("animated") else 0.25)
+        except EOFError:
+            return
+        if not event:
+            continue
+        action = handle(view, event, time.monotonic())  # The time it arrived, for double-clicks.
+        if action == "quit":
+            return
+        if action == "run":
+            item = view.find(view.running)
+            try:
+                if not item:
+                    raise RuntimeError("That command is no longer available")
+                item.entry["run"](view.query if view.prompt else None)
+            except herdr.ERRORS as error:
+                view.say(herdr.clean(error), "red", 5)
+                panes.poke()
+                continue
+            return
+        if action == "close":
+            item = view.find(view.closing)
+            try:
+                if not item:
+                    raise RuntimeError("That pane is already gone")
+                inventory.close(item.entry)
+                view.say(f"Closed {item.fields['label']}")
+            except herdr.ERRORS as error:
+                view.say(herdr.clean(error), "red")
+            panes.poke()
+        if action == "accept":
+            entry = view.current().entry
+            if entry["kind"] == "error":
+                view.say(entry["error"], "red")
+                continue
+            try:
+                inventory.focus(entry)
+            except herdr.ERRORS as error:
+                view.say(herdr.clean(error), "red", 5)
+                panes.poke()
+                continue
+            if entry.get("machine_id"):
+                remote_focused(screen, palette, view.current().fields["label"], entry["machine"])
+            return
+
+
+def remote_focused(screen, palette, label, machine):
+    """Herdr has no plugin API to switch the client's displayed machine, so say where to look."""
+    render.draw_message(screen, palette, [
+        (f"Focused {label}", "text"),
+        (f"Select {machine} in Herdr's sidebar to see it.", "subtext0"),
+        ("Press any key to close", "overlay0")])
+    screen.refresh()
+    with suppress(EOFError):
+        while not screen.event(1):
+            pass

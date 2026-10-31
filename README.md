@@ -123,17 +123,8 @@ the open popup uses about 2–4% of one core.
 ## Development
 
 ```sh
-herdr plugin link "$PWD"              # run this checkout instead of the installed copy
+herdr plugin link "$PWD"                 # run this checkout instead of the installed copy
 herdr plugin log list --plugin emanuel2718.herdscope
-python3 picker.py list                # the ranked inventory as JSON
-python3 -m unittest -v test_picker    # the tests; no dependencies
+python3 -m herdscope list                # the ranked inventory as JSON
+python3 -m unittest discover -s tests    # the tests; no dependencies
 ```
-
-- `open.sh` opens the popup, so the key press doesn't start Python.
-- `picker.py` has Herdr's API, the inventory, focusing and closing, and visit history.
-- `picker_ui.py` has the view, layout, drawing, input and previews.
-- `commands.py` has the command catalog.
-- `fuzzy.py` is the fzf port.
-- `theme.py` resolves colors.
-- `terminal_ui.py` is the terminal canvas, ANSI decoding and input.
-- `status.sh` is the status-change hook.

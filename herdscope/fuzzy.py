@@ -12,8 +12,8 @@ term without accents ignores them ("cafe" finds "café"), while one with accents
 matches them.
 """
 
-from functools import lru_cache
 import unicodedata
+from functools import lru_cache
 
 SCORE_MATCH = 16
 SCORE_GAP_START = -3
@@ -52,7 +52,7 @@ def bonus_for(previous, current):
             return BONUS_BOUNDARY_DELIMITER
         if previous == NON_WORD:
             return BONUS_BOUNDARY
-    if previous == LOWER and current == UPPER or previous != NUMBER and current == NUMBER:
+    if (previous == LOWER and current == UPPER) or (previous != NUMBER and current == NUMBER):
         return BONUS_CAMEL123
     if current in (NON_WORD, DELIMITER):
         return BONUS_NON_WORD
@@ -229,7 +229,7 @@ def fuzzy(text, folded, pattern):
         score = h[row + j]
         diagonal = h[row - width + j - 1] if index > 0 and column >= firsts[index] else 0
         left = h[row + j - 1] if column > firsts[index] else 0
-        if score > diagonal and (score > left or score == left and prefer_match):
+        if score > diagonal and (score > left or (score == left and prefer_match)):
             positions.append(low + column)
             if index == 0:
                 break
@@ -354,7 +354,7 @@ class Query:
         for terms in self.sets:
             matched = False
             for term in terms:
-                result = remember(self.terms[term], text, lambda: run(term))
+                result = remember(self.terms[term], text, lambda term=term: run(term))
                 if result and not term[1]:
                     total += result[0]
                     positions.update(result[1])

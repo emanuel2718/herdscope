@@ -1,7 +1,6 @@
 """A small true-color terminal canvas: styled cells, row diffing, ANSI and input decoding."""
 
 import codecs
-from functools import lru_cache
 import os
 import re
 import select
@@ -10,8 +9,9 @@ import termios
 import threading
 import time
 import tty
-from typing import NamedTuple
 import unicodedata
+from functools import lru_cache
+from typing import NamedTuple
 
 
 class Style(NamedTuple):

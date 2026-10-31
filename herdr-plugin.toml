@@ -2,13 +2,14 @@ id = "emanuel2718.herdscope"
 name = "Herdscope"
 version = "0.1.0"
 min_herdr_version = "0.9.1"
-description = "A fuzzy finder for everything in Herdr, with live previews"
+description = "A fuzzy finder for every agent, terminal and command in Herdr, with live previews"
 platforms = ["macos", "linux"]
 
+# The key binding runs this, which opens the popup without starting Python first.
 [[actions]]
 id = "open"
 title = "Herdscope"
-command = ["sh", "open.sh"]
+command = ["sh", "scripts/open.sh"]
 
 [[panes]]
 id = "picker"
@@ -16,12 +17,14 @@ title = "Herdscope"
 placement = "popup"
 width = "90%"
 height = "80%"
-command = ["python3", "picker.py", "ui"]
+command = ["python3", "-m", "herdscope", "ui"]
 
+# Counts visits to panes, so the ones you use most rank higher.
 [[events]]
 on = "pane.focused"
-command = ["python3", "picker.py", "record-visit"]
+command = ["python3", "-m", "herdscope", "record-visit"]
 
+# Remembers when each agent's status began, for "blocked 2m". Runs on every status change, so it's sh.
 [[events]]
 on = "pane.agent_status_changed"
-command = ["sh", "status.sh"]
+command = ["sh", "scripts/record-status.sh"]

@@ -8,7 +8,7 @@ import os
 import shutil
 import subprocess
 
-import picker
+from herdscope import herdr, inventory
 
 # Herdr 0.9.1's default bindings, shown for commands the config leaves unset.
 DEFAULT_KEYS = {"prefix": "ctrl+b", "new_workspace": "prefix+shift+n", "rename_workspace": "prefix+shift+w",
@@ -86,32 +86,32 @@ def catalog(snapshot, settings, actions=()):
     def shortcut(name):
         return chord(keys.get(name), keys["prefix"]) if name else ""
 
-    panes = {entry["pane_id"]: entry for entry in picker.entries(snapshot)}
+    panes = {entry["pane_id"]: entry for entry in inventory.entries(snapshot)}
     workspaces = sorted(snapshot.get("workspaces", []), key=lambda w: w.get("number", 0))
     pane = panes.get(snapshot.get("focused_pane_id"))
     cwd = (pane["cwd"] or None) if pane else None
     result = [command("new_workspace", "+", "New workspace", "workspace", "", shortcut("new_workspace"),
-                      "create space open", lambda text: picker.rpc("workspace.create", {
+                      "create space open", lambda text: herdr.rpc("workspace.create", {
                           "cwd": cwd, "focus": True, "label": (text or "").strip() or None}),
                       "Creates a workspace and switches to it. Leave the name empty to name it after its folder.",
                       ask="", blank="named after its folder", folder=cwd)]
     if pane:
         workspace_id, tab_id, pane_id = pane["workspace_id"], pane["tab_id"], pane["pane_id"]
-        workspace, place, label = pane["workspace"], f"{pane['workspace']}:{pane['tab']}", picker.labels(pane)[0]
+        workspace, place, label = pane["workspace"], f"{pane['workspace']}:{pane['tab']}", inventory.labels(pane)[0]
         in_workspace = [e["id"] for e in panes.values() if e["workspace_id"] == workspace_id]
         in_tab = [e["id"] for e in panes.values() if e["tab_id"] == tab_id]
         order = [w["workspace_id"] for w in workspaces]
         index = order.index(workspace_id) if workspace_id in order else -1
-        sidebar = [(w.get("number", i + 1), picker.clean(w.get("label", "")), w["workspace_id"] == workspace_id)
+        sidebar = [(w.get("number", i + 1), herdr.clean(w.get("label", "")), w["workspace_id"] == workspace_id)
                    for i, w in enumerate(workspaces)]
 
         def move(before):
-            return lambda text: picker.rpc("workspace.move_block",
+            return lambda text: herdr.rpc("workspace.move_block",
                                            {"workspace_ids": [workspace_id], "before_workspace_id": before})
 
         result += [
             command("rename_workspace", "✎", "Rename workspace", "workspace", workspace, shortcut("rename_workspace"),
-                    "space title", lambda text: picker.rpc("workspace.rename", {
+                    "space title", lambda text: herdr.rpc("workspace.rename", {
                         "workspace_id": workspace_id, "label": needed(text)}),
                     "Renames the workspace you came from.", ask=workspace, blank=None, was=workspace,
                     sidebar=sidebar),
@@ -127,42 +127,42 @@ def catalog(snapshot, settings, actions=()):
                                   sidebar=sidebar))
         result += [
             command("close_workspace", "×", "Close workspace", "workspace", workspace, shortcut("close_workspace"),
-                    "space kill delete", lambda text: picker.rpc("workspace.close", {"workspace_id": workspace_id}),
+                    "space kill delete", lambda text: herdr.rpc("workspace.close", {"workspace_id": workspace_id}),
                     f"Closes {workspace} and everything running in it:",
                     confirm=f"Close workspace {workspace}? Its {plural(len(in_workspace), 'pane')} stop.",
                     affects=in_workspace),
             command("new_tab", "+", "New tab", "tab", workspace, shortcut("new_tab"), "create window open",
-                    lambda text: picker.rpc("tab.create", {"workspace_id": workspace_id, "cwd": cwd, "focus": True,
+                    lambda text: herdr.rpc("tab.create", {"workspace_id": workspace_id, "cwd": cwd, "focus": True,
                                                            "label": (text or "").strip() or None}),
                     f"Opens a tab in {workspace} and switches to it. Leave the name empty for a numbered tab.",
                     ask="", blank="a numbered tab", folder=cwd),
             command("rename_tab", "✎", "Rename tab", "tab", place, shortcut("rename_tab"), "window title",
-                    lambda text: picker.rpc("tab.rename", {"tab_id": tab_id, "label": needed(text)}),
+                    lambda text: herdr.rpc("tab.rename", {"tab_id": tab_id, "label": needed(text)}),
                     f"Renames tab {pane['tab']} in {workspace}.", ask=pane["tab"], blank=None, was=pane["tab"]),
             command("close_tab", "×", "Close tab", "tab", place, shortcut("close_tab"), "window kill delete",
-                    lambda text: picker.rpc("tab.close", {"tab_id": tab_id}),
+                    lambda text: herdr.rpc("tab.close", {"tab_id": tab_id}),
                     f"Closes tab {pane['tab']} in {workspace} and everything running in it:",
                     confirm=f"Close tab {pane['tab']} in {workspace}? Its {plural(len(in_tab), 'pane')} "
                             f"stop{'s' * (len(in_tab) == 1)}.",
                     affects=in_tab),
             command("split_right", "◫", "Split right", "pane", label, shortcut("split_vertical"), "vertical",
-                    lambda text: picker.rpc("pane.split", {"target_pane_id": pane_id, "direction": "right",
+                    lambda text: herdr.rpc("pane.split", {"target_pane_id": pane_id, "direction": "right",
                                                            "focus": True, "cwd": cwd}),
                     "Splits the pane you came from and starts a shell beside it.", split="right", pane=pane["id"]),
             command("split_down", "⊟", "Split down", "pane", label, shortcut("split_horizontal"), "horizontal",
-                    lambda text: picker.rpc("pane.split", {"target_pane_id": pane_id, "direction": "down",
+                    lambda text: herdr.rpc("pane.split", {"target_pane_id": pane_id, "direction": "down",
                                                            "focus": True, "cwd": cwd}),
                     "Splits the pane you came from and starts a shell below it.", split="down", pane=pane["id"]),
             command("zoom", "⤢", "Zoom pane", "pane", label, shortcut("zoom"), "fullscreen maximize unzoom",
-                    lambda text: picker.rpc("pane.zoom", {"pane_id": pane_id}),
+                    lambda text: herdr.rpc("pane.zoom", {"pane_id": pane_id}),
                     "Toggles zoom on the pane you came from, so it fills its tab."),
             command("rename_pane", "✎", "Rename pane", "pane", label, shortcut("rename_pane"), "title",
-                    lambda text: picker.rpc("pane.rename", {"pane_id": pane_id,
+                    lambda text: herdr.rpc("pane.rename", {"pane_id": pane_id,
                                                             "label": (text or "").strip() or None}),
                     "Names the pane you came from. Leave it empty to go back to its own title.",
                     ask=label, blank="its own title", was=label),
             command("close_pane", "×", "Close pane", "pane", label, shortcut("close_pane"), "kill delete",
-                    lambda text: picker.rpc("pane.close", {"pane_id": pane_id}),
+                    lambda text: herdr.rpc("pane.close", {"pane_id": pane_id}),
                     "Closes the pane you came from and what runs in it:",
                     confirm=f"Close {label}? {'This stops the agent.' if pane['agent'] else 'Its shell stops.'}",
                     affects=[pane["id"]]),
@@ -175,21 +175,21 @@ def catalog(snapshot, settings, actions=()):
         if cwd and in_git(cwd):
             result.append(command("new_worktree", "⑂", "New worktree", "worktree", workspace,
                                   shortcut("new_worktree"), "git branch create",
-                                  lambda text: picker.rpc("worktree.create", {
+                                  lambda text: herdr.rpc("worktree.create", {
                                       "cwd": cwd, "branch": needed(text, "a branch name"), "focus": True}),
                                   "Creates a Git worktree for a new branch and opens it as a workspace.",
                                   ask="", blank=None, folder=cwd))
     result.append(command("reload_config", "↻", "Reload config", "herdr", "", shortcut("reload_config"),
-                          "settings refresh", lambda text: picker.rpc("server.reload_config"),
+                          "settings refresh", lambda text: herdr.rpc("server.reload_config"),
                           "Reloads Herdr's config file, so key, theme and plugin changes apply."))
     for action in actions:
-        if action["plugin_id"] != picker.PLUGIN:
+        if action["plugin_id"] != herdr.PLUGIN:
             full = f"{action['plugin_id']}.{action['action_id']}"
             result.append(command(f"plugin:{action['plugin_id']}:{action['action_id']}", "◆",
-                                  picker.clean(action.get("title") or action["action_id"]), "plugin",
+                                  herdr.clean(action.get("title") or action["action_id"]), "plugin",
                                   action["plugin_id"].split(".")[-1], "", "action",
                                   # After the popup closes, as from a key binding, so the action can open its own.
-                                  lambda text, full=full: later(picker.HERDR, "plugin", "action", "invoke", full),
+                                  lambda text, full=full: later(herdr.HERDR, "plugin", "action", "invoke", full),
                                   f"Runs an action from the {action['plugin_id']} plugin."))
     return result
 
@@ -204,10 +204,10 @@ START = ('start() { "$0" agent start "$1" --kind "$2" --pane "$3" >/dev/null 2>&
 def start(agent, workspace_id, cwd):
     """Open a tab and start `agent` in it, named uniquely: Herdr refuses a name already in use."""
     def run(text):
-        tab = picker.rpc("tab.create", {"workspace_id": workspace_id, "cwd": cwd, "focus": True, "label": None})
+        tab = herdr.rpc("tab.create", {"workspace_id": workspace_id, "cwd": cwd, "focus": True, "label": None})
         pane_id = tab["root_pane"]["pane_id"]
         # Herdr waits until the agent is ready, which outlives the popup, so this runs detached.
-        subprocess.Popen(["sh", "-c", START, picker.HERDR, f"{agent}-{pane_id.replace(':', '-')}", agent, pane_id],
+        subprocess.Popen(["sh", "-c", START, herdr.HERDR, f"{agent}-{pane_id.replace(':', '-')}", agent, pane_id],
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          start_new_session=True)
     return run
@@ -216,7 +216,7 @@ def start(agent, workspace_id, cwd):
 def load(snapshot, settings):
     """The catalog, with other plugins' actions if Herdr lists them."""
     try:
-        actions = picker.rpc("plugin.action.list").get("actions", [])
-    except picker.ERRORS:
+        actions = herdr.rpc("plugin.action.list").get("actions", [])
+    except herdr.ERRORS:
         actions = []
     return catalog(snapshot, settings, actions)

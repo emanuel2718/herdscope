@@ -6,10 +6,10 @@ terminal default, or "dim" for the terminal's text, dimmed. Overrides use Herdr'
 """
 
 import os
-from pathlib import Path
 import re
 import subprocess
 import tomllib
+from pathlib import Path
 
 # Herdr's token names. The picker draws with a subset; keeping all of them means any
 # [theme.custom] override written for Herdr applies here unchanged.
