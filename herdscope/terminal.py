@@ -226,40 +226,56 @@ def apply_sgr(state, params, base):
 
 
 def parse_ansi(text, base):
-    """Decode SGR-colored text into lines of (text, Style) runs; drops other controls."""
+    """Decode SGR-colored text into lines of (text, Style) runs; drops other controls.
+
+    A pane's output changes a few lines at a time, so each line's runs are remembered, keyed by
+    the line and the colors it starts with: re-reading a busy pane re-decodes only what changed.
+    The runs are shared, so callers must not change them.
+    """
     state = (base.fg, base.bg, False, False, False, False, False)
     lines = []
     for raw in text.split("\n"):
-        runs, column, position = [], 0, 0
-        for match in [*ESCAPE.finditer(raw), None]:
-            chunk = raw[position : match.start() if match else len(raw)]
-            if chunk:
-                cleaned = []
-                for char in chunk:
-                    if char == "\t":
-                        spaces = 8 - column % 8
-                        cleaned.append(" " * spaces)
-                        column += spaces
-                    elif char == "\xa0":
-                        cleaned.append(" ")
-                        column += 1
-                    elif char.isprintable():
-                        cleaned.append(char)
-                        column += char_width(char)
-                fg, bg, bold, dim, italic, underline, reverse = state
-                if reverse:
-                    fg, bg = (bg if bg is not None else base.bg), (fg if fg is not None else base.fg)
-                if cleaned:
-                    runs.append(("".join(cleaned), Style(fg, bg, bold, dim, italic, underline)))
-            if match is None:
-                break
-            if match.group(3) == "m" and not match.group(2):
-                state = apply_sgr(state, match.group(1), base)
-            position = match.end()
+        runs, state = parse_line(raw, state, base)
         lines.append(runs)
     while lines and not "".join(text for text, _ in lines[-1]).strip():
         lines.pop()
     return lines
+
+
+@lru_cache(maxsize=4096)
+def parse_line(raw, state, base):
+    """One line's (text, Style) runs, and the SGR state it leaves for the next line."""
+    runs, column, position = [], 0, 0
+    for match in [*ESCAPE.finditer(raw), None]:
+        chunk = raw[position : match.start() if match else len(raw)]
+        if chunk:
+            if chunk.isascii() and chunk.isprintable():  # Most text: kept as is, a cell a character.
+                cleaned, column = chunk, column + len(chunk)
+            else:
+                parts = []
+                for char in chunk:
+                    if char == "\t":
+                        spaces = 8 - column % 8
+                        parts.append(" " * spaces)
+                        column += spaces
+                    elif char == "\xa0":
+                        parts.append(" ")
+                        column += 1
+                    elif char.isprintable():
+                        parts.append(char)
+                        column += char_width(char)
+                cleaned = "".join(parts)
+            fg, bg, bold, dim, italic, underline, reverse = state
+            if reverse:
+                fg, bg = (bg if bg is not None else base.bg), (fg if fg is not None else base.fg)
+            if cleaned:
+                runs.append((cleaned, Style(fg, bg, bold, dim, italic, underline)))
+        if match is None:
+            break
+        if match.group(3) == "m" and not match.group(2):
+            state = apply_sgr(state, match.group(1), base)
+        position = match.end()
+    return runs, state
 
 
 # Input decoding. Events: ("key", name), ("text", str), ("paste", str), ("mouse", (button, x, y, pressed)).
