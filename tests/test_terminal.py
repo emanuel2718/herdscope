@@ -66,6 +66,20 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual("".join(t for t, _ in lines[1]), "revlink z", "tab stops count printed columns")
         self.assertEqual(lines[2][0][1].fg, "#090807")
 
+    def test_icons_from_private_use_fonts_are_kept(self):
+        # Nerd Font and powerline glyphs live in Unicode's private use area, which
+        # str.isprintable() rejects; prompts like starship's draw with them.
+        line = parse_ansi("\ue0a0 main \U000f0219 ~/src", Style("#ffffff", "#000000"))[0]
+        self.assertEqual("".join(text for text, _ in line), "\ue0a0 main \U000f0219 ~/src")
+        self.assertEqual(parse_input("\ue0a0x"), (("text", "\ue0a0x"), 2))
+
+    def test_the_canvas_never_holds_a_control_character(self):
+        # Folder names and pastes reach the canvas from outside; an escape there would act.
+        canvas = Canvas(1, 30)
+        canvas.put(0, 0, "a\x1b]52;c;aGk=\x07b\x1b[2J\rc", Style("#ffffff", "#000000"))
+        self.assertTrue(all(char.isprintable() for char, _ in canvas.cells[0]), canvas.text())
+        self.assertEqual(canvas.text().rstrip(), "a]52;c;aGk=b[2Jc")
+
     def test_color_query_replies_are_read_and_never_typed(self):
         self.assertEqual(rgb("b3b3", "b3b3", "b3b3"), "#b3b3b3")
         self.assertEqual(rgb("f", "0", "80"), "#ff0080")

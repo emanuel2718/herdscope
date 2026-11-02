@@ -21,11 +21,22 @@ ERRORS = (OSError, ValueError, KeyError, RuntimeError)
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)")
 
 
+def printable(char):
+    """Whether `char` draws as a glyph: what str.isprintable() accepts, and also private-use
+    characters (Nerd Font and powerline icons) and ones newer than Python's Unicode tables."""
+    if char.isprintable():
+        return True
+    # Imported here: only rare characters get this far, and the hooks start faster without it.
+    import unicodedata  # noqa: PLC0415
+
+    return unicodedata.category(char) in ("Co", "Cn")
+
+
 def clean(value):
     """`value` as one printable line: escapes and control characters removed, whitespace collapsed."""
     text = str(value or "")
     if not text.isprintable():  # Rare, so most labels skip the per-character pass.
-        text = "".join(c for c in ANSI.sub("", text) if c.isprintable() or c.isspace())
+        text = "".join(c for c in ANSI.sub("", text) if printable(c) or c.isspace())
     return " ".join(text.split())
 
 

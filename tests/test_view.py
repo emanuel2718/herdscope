@@ -117,6 +117,23 @@ class ViewTests(unittest.TestCase):
         self.assertIsNone(handle(view, ("mouse", (0, 5, 6, True)), 1.2))
         self.assertEqual(view.prompt, view.selected, "a command asks for its name, never tries to focus")
 
+    def test_clicks_in_the_preview_leave_the_selection_alone(self):
+        rows = Rows(inventory.entries(snapshot()))
+        view, _ = rows.view()
+        selected = view.selected
+        view.hits = {"rows": {6: 2}, "tabs": [], "tabs_y": 3, "preview": (40, 0, 40, 20)}
+        for at in (1.0, 1.1):  # A double-click, as when selecting a word.
+            self.assertIsNone(handle(view, ("mouse", (0, 50, 6, True)), at))
+        self.assertEqual(view.selected, selected)
+        handle(view, ("mouse", (0, 5, 6, True)), 2.0)
+        self.assertNotEqual(view.selected, selected, "the same line in the list still picks its row")
+
+    def test_a_paste_loses_its_escapes_and_control_characters(self):
+        rows = Rows(inventory.entries(snapshot()))
+        view, _ = rows.view()
+        handle(view, ("paste", "ab\x1b[2Jc\x08d\x00e\n f"), 0)
+        self.assertEqual(view.query, "abcde f")
+
     def test_double_clicking_a_command_that_confirms_waits_for_the_answer(self):
         entries = Rows(inventory.entries(snapshot()) + list(catalog().values())).entries
         view = View()

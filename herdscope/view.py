@@ -8,7 +8,7 @@ import re
 import time
 from collections import Counter
 
-from herdscope import fuzzy, inventory
+from herdscope import fuzzy, herdr, inventory
 
 SCOPES = ("All", "Agents", "Terminals", "Commands")
 SCOPE_KINDS = (None, "agent", "terminal", "command")
@@ -300,7 +300,7 @@ def handle(view, event, now):
     if kind == "mouse":
         return mouse(view, value, now)
     if kind in ("text", "paste"):
-        text = " ".join(value.split()) if kind == "paste" else value
+        text = herdr.clean(value) if kind == "paste" else value
         if text == "?" and not view.query:
             view.help = True  # Like ">" for commands: on an empty search, "?" opens the help.
             return None
@@ -355,7 +355,7 @@ def answer(view, event):
     """Keys while a command asks for text: edit it, Enter runs the command, Esc goes back to the list."""
     kind, value = event
     if kind in ("text", "paste"):
-        view.edit(None, " ".join(value.split()) if kind == "paste" else value)
+        view.edit(None, herdr.clean(value) if kind == "paste" else value)
     elif value in ACCEPT_KEYS:
         view.running = view.prompt
         return "run"
@@ -377,8 +377,8 @@ def mouse(view, value, now):
         else:
             view.move(-1 if up else 1)
         return None
-    if not pressed or button & 3:
-        return None
+    if not pressed or button & 3 or in_preview:
+        return None  # The preview shares the list's lines, so a click there must not pick a row.
     if y == view.hits.get("tabs_y"):
         for start, end, scope in view.hits["tabs"]:
             if start <= x < end:

@@ -13,6 +13,8 @@ import unicodedata
 from collections import namedtuple
 from functools import lru_cache
 
+from herdscope.herdr import printable
+
 # A cell's look. Colors are "#rrggbb", a palette index, or None for the terminal's default.
 # A namedtuple rather than typing.NamedTuple: importing typing adds milliseconds to every start.
 Style = namedtuple("Style", "fg bg bold dim italic underline", defaults=(None, None, False, False, False, False))
@@ -112,6 +114,10 @@ class Canvas:
         """Draw text clipped to `limit` cells; returns the column after it."""
         if not 0 <= y < self.height:
             return x
+        if not text.isprintable():
+            # Whatever the text came from (a folder name, a paste, another machine), a control
+            # character would reach the terminal as it is, and an escape sequence would act.
+            text = "".join(char for char in text if printable(char))
         right = self.width if limit is None else min(self.width, x + limit)
         row = self.cells[y]
         if x >= 0 and text.isascii():
@@ -261,7 +267,7 @@ def parse_line(raw, state, base):
                     elif char == "\xa0":
                         parts.append(" ")
                         column += 1
-                    elif char.isprintable():
+                    elif printable(char):
                         parts.append(char)
                         column += char_width(char)
                 cleaned = "".join(parts)
@@ -387,9 +393,9 @@ def parse_input(buffer, final=False):
         return ("key", CONTROL[char]), 1
     if char < " ":
         return ("key", "ctrl-" + chr(ord(char) + 96)), 1
-    if char.isprintable():
+    if printable(char):
         end = 1
-        while end < len(buffer) and buffer[end].isprintable() and buffer[end] != "\x1b":
+        while end < len(buffer) and printable(buffer[end]):
             end += 1
         return ("text", buffer[:end]), end
     return None, 1
