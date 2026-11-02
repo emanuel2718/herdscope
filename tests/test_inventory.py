@@ -51,12 +51,21 @@ class InventoryTests(StateTestCase):
             panes.poke()
             worker = threading.Thread(target=panes.refresh, daemon=True)
             worker.start()
-            time.sleep(0.2)
+            deadline = time.monotonic() + 5  # However slow the machine, wait for the failing refresh.
+            while time.monotonic() < deadline and panes.current()[1][0]["kind"] != "error":
+                time.sleep(0.01)
             panes.stop.set()
             panes.poked.set()
             worker.join(1)
         self.assertEqual(panes.current()[1][0]["kind"], "error", "an error row, not a dead thread")
         self.assertIn("odd reply", panes.current()[1][0]["error"])
+
+    def test_a_corrupt_history_still_opens_the_picker(self):
+        (herdr.STATE / "history.sqlite3").write_bytes(b"not a database" * 100)
+        with patch.object(herdr, "rpc", lambda method, params=None: {"snapshot": snapshot()}):
+            panes = inventory.Inventory()
+        self.assertEqual(panes.scores, {})
+        self.assertEqual(len(panes.current()[1]), len(inventory.entries(snapshot())))
 
     def test_many_machines_share_a_few_connections(self):
         machines = [{"id": f"m{i}", "label": f"Box {i}"} for i in range(40)]

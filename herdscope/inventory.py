@@ -236,7 +236,10 @@ class Inventory:
         self.version = 0
         self.cache = None
         self.changed = lambda: None
-        self.scores = history.visits()
+        try:
+            self.scores = history.visits()
+        except (sqlite3.Error, OSError):
+            self.scores = {}  # Ranking history is a nicety: a corrupt or unwritable one mustn't keep the picker shut.
         self.snapshot = herdr.rpc("session.snapshot")["snapshot"]
 
         if ORIGIN in {pane["pane_id"] for pane in self.snapshot.get("panes", [])}:
