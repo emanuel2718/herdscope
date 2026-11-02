@@ -15,14 +15,15 @@ herdr plugin link "$PWD"          # Herdr now runs this checkout; edits apply on
 Bind a key as the [README](README.md#install) shows, open Herdscope, and you're running your
 checkout. Herdr re-reads the manifest live, so there's nothing to restart.
 
-| Command                                                | What it does                                  |
-| ------------------------------------------------------ | --------------------------------------------- |
-| `python3 -m unittest`                                  | Run the tests                                 |
-| `ruff check . && ruff format --check .`                | Lint and check formatting, as CI does         |
-| `python3 -m herdscope list`                            | Print the ranked inventory as JSON            |
-| `herdr plugin log list --plugin emanuel2718.herdscope` | See what the hooks and actions ran, and how   |
-| `python3 tools/benchmark.py [--fzf]`                   | Time keystrokes and frames; compare with fzf  |
-| `python3 tools/screenshot.py`                          | Redraw `assets/screenshot.png` (needs Chrome) |
+| Command                                                | What it does                                      |
+| ------------------------------------------------------ | ------------------------------------------------- |
+| `python3 -m unittest`                                  | Run the tests                                     |
+| `ruff check . && ruff format --check .`                | Lint and check formatting, as CI does             |
+| `python3 -m herdscope list`                            | Print the ranked inventory as JSON                |
+| `herdr plugin log list --plugin emanuel2718.herdscope` | See what the hooks and actions ran, and how       |
+| `python3 tools/benchmark.py [--fzf]`                   | Time keystrokes and frames; compare with fzf      |
+| `python3 tools/screenshot.py`                          | Redraw `assets/screenshot.png` (needs Chrome)     |
+| `python3 tools/social_preview.py`                      | Redraw `assets/social-preview.png` (needs Chrome) |
 
 The tests drive the real picker through a pseudo-terminal against a stand-in Herdr, so they
 need no running Herdr. If `fzf` is installed, the ranking tests also compare against it.

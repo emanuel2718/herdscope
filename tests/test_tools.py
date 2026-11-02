@@ -10,6 +10,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import benchmark
 import screenshot
+import social_preview
 
 
 class ToolTests(unittest.TestCase):
@@ -25,6 +26,13 @@ class ToolTests(unittest.TestCase):
         html = screenshot.page(screenshot.frame(tokens), tokens)
         for text in ("Migrate router to typed routes", "gpu-box", "Allow Codex to edit", "Herdscope"):
             self.assertIn(text, html)
+
+    def test_social_preview_shows_every_agent_and_no_preview(self):
+        tokens = social_preview.theme.load({"theme": {"name": "catppuccin"}})
+        html = social_preview.page(social_preview.frame(tokens), tokens)
+        for _, _, _, _, task, *_ in (*screenshot.AGENTS, *screenshot.REMOTE):
+            self.assertIn(task, html)
+        self.assertNotIn("Allow Codex to edit", html)
 
     @unittest.skipUnless(shutil.which("fzf"), "fzf is not installed")
     def test_benchmark_ranks_panes_exactly_as_fzf_does(self):
