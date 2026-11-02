@@ -12,7 +12,6 @@ term without accents ignores them ("cafe" finds "café"), while one with accents
 matches them.
 """
 
-import unicodedata
 from functools import lru_cache
 
 SCORE_MATCH = 16
@@ -45,7 +44,7 @@ def char_class(char):
 
 
 def bonus_for(previous, current):
-    if current > NON_WORD:
+    if current >= NON_WORD:  # Punctuation starts a word too: `_test` in `foo _test`.
         if previous == WHITE:
             return BONUS_BOUNDARY_WHITE
         if previous == DELIMITER:
@@ -90,13 +89,63 @@ def bonuses(text):
     return (previous << 3 | int.from_bytes(classes, "big")).to_bytes(len(classes), "big").translate(PAIR_BONUS)
 
 
-# Latin letters without their accents (é → e), as fzf normalizes them. Every item is matched
-# on every key press, so this is one str.translate rather than a Python loop per character.
-UNACCENTED = {
-    code: base
-    for code in (*range(0xC0, 0x250), *range(0x1E00, 0x1F00))
-    if (base := unicodedata.normalize("NFD", chr(code))[0]).isascii() and base != chr(code)
+# What matches a plain character, from fzf's table: é → e, ł → l, fullwidth to plain. A term
+# without any matches them too; a term with one matches only it. Every item is matched on every
+# key press, so this is one str.translate rather than a Python loop per character.
+FOLDS = {
+    "A": "ÀÁÂÃÄÅȺᴀẤẦẨẪẬẮẰẲẴẶ",
+    "B": "ƁɃʙᴃ",
+    "C": "ÇȻᴄ",
+    "D": "ƉƊᴅ",
+    "E": "ÈÉÊËƎƐɆᴇẾỀỂỄỆ",
+    "G": "Ɠɢʛ",
+    "H": "ʜ",
+    "I": "ÌÍÎÏİƗɪ",
+    "J": "Ɉᴊ",
+    "K": "ᴋ",
+    "L": "Ƚʟᴌ",
+    "M": "Ɯᴍ",
+    "N": "ÑƝȠɴᴎ",
+    "O": "ÒÓÔÕÖØƆƟᴏᴐỐỒỔỖỘỚỜỞỠỢ",
+    "P": "ᴘ",
+    "Q": "Ɋ",
+    "R": "Ɍʀʁᴙᴚ",
+    "T": "ƮȾᴛ",
+    "U": "ÙÚÛÜɄᴜỨỪỬỮỰ",
+    "V": "ƲɅᴠ",
+    "W": "ᴡ",
+    "Y": "ÝŸɎʏ",
+    "Z": "ᴢ",
+    "a": "àáâãäåāăąǎȁȃȧɐɑͣḁẚạảấầẩẫậắằẳẵặ",
+    "b": "ƀƃɓḃḅḇ",
+    "c": "çćĉċčƈȼɕʗͨↄ",
+    "d": "ďđƌȡɖɗͩḋḍḏḑḓ",
+    "e": "èéêëēĕėęěǝȅȇȩɇɘɛɜɝɞʚͤᴈḙḛẹẻẽếềểễệ",
+    "f": "ƒḟ",
+    "g": "ĝğġģǥǧǵɠɡḡ",
+    "h": "ĥħȟɥɦʮͪḣḥḧḩḫẖₕ",
+    "i": "ìíîïĩīĭįıǐȉȋɨͥᴉᵢḭỉịⁱ",
+    "j": "ĵǰȷɉɟʝ",
+    "k": "ķƙǩʞḱḳḵₖ",
+    "l": "ĺļľŀłƚȴɫɬɭḷḻḽₗ",
+    "m": "ɯɰɱͫᴟḿṁṃₘ",
+    "n": "ñńņňƞǹȵɲɳṅṇṉṋₙ",
+    "o": "òóôõöøōŏőơǒǫȍȏȯɔɵͦᴑᴒᴓᴖᴗọỏốồổỗộớờởỡợ",
+    "p": "ƥṕṗₚ",
+    "q": "ɋʠ",
+    "r": "ŕŗřȑȓɍɹɺɻɼɽɾɿͬᵣṙṛṟ",
+    "s": "ßśŝşšſșȿʂṡṣẛₛ",
+    "t": "ţťŧƫƭțȶʇʈͭṫṭṯṱẗₜ",
+    "u": "ùúûüũūŭůűųưǔȕȗʉͧᴝᴞᵤṳṵṷụủứừửữự",
+    "v": "ʋʌͮᵥṽṿ",
+    "w": "ŵʍẁẃẅẇẉẘ",
+    "x": "ͯẋẍ",
+    "y": "ýÿŷƴȳɏʎẏẙỳỵỷỹ",
+    "z": "źżžƶȥɀʐʑẑẓẕ",
 }
+UNACCENTED = {ord(char): base for base, chars in FOLDS.items() for char in chars}
+UNACCENTED.update({code: code - 0xFEE0 for code in range(0xFF01, 0xFF5F)})  # Fullwidth ASCII.
+UNACCENTED[0xFF61] = "."  # Halfwidth ideographic full stop.
 
 
 def normalize(text):
@@ -105,11 +154,12 @@ def normalize(text):
 
 def lower(text):
     # Keep one character per position so match indices stay valid in the original. str.lower
-    # does that, except for "İ", which grows, and "Σ", which depends on its neighbors.
+    # does that, except for "İ", which grows ("i" and a dot; Go, like fzf, makes it "i"), and
+    # "Σ", which depends on its neighbors.
     folded = text.lower()
     if len(folded) == len(text) and "Σ" not in text:
         return folded
-    return "".join(c if len(c.lower()) != 1 else c.lower() for c in text)
+    return "".join(c.lower()[0] for c in text)
 
 
 def score_range(text, folded, pattern, start, end):
@@ -353,7 +403,19 @@ def exact(text, folded, pattern, boundary=False):
             if bonus >= BONUS_BOUNDARY:
                 break
         at = folded.find(pattern, at + 1)
-    return None if best is None else score_range(text, folded, pattern, best, best + len(pattern))
+    if best is None:
+        return None
+    end = best + len(pattern)
+    if not boundary:
+        return score_range(text, folded, pattern, best, end)
+    # As in fzf, a whole word scores by its edges alone, and one beside an underscore ranks lower,
+    # so `'foo'` prefers `x-foo-y` to `x_foo_y`.
+    score, deduct = best_bonus, best_bonus - BONUS_BOUNDARY + 1
+    if best and text[best - 1] == "_":
+        score, deduct = score - deduct - 1, 1
+    if end < len(text) and text[end] == "_":
+        score -= deduct
+    return score + SCORE_MATCH * len(pattern) + BONUS_BOUNDARY_WHITE * (len(pattern) + 1), list(range(best, end))
 
 
 def anchored(text, folded, pattern, kind):
@@ -390,8 +452,8 @@ def haystacks(text):
     if text.isascii():  # Most text: no accents to strip, and lowercasing keeps every position.
         folded = text.lower()
         return text, folded, text, folded
-    normalized = normalize(text)
-    return text, lower(text), normalized, lower(normalized)
+    lowered = lower(text)  # Lowered, then unaccented, as fzf does: its table has few capitals.
+    return text, lowered, normalize(text), normalize(lowered)
 
 
 def parse(query):
@@ -421,7 +483,11 @@ def parse(query):
         elif text.startswith("^"):
             kind, text = (EQUAL if kind == SUFFIX else PREFIX), text[1:]
         if text:
-            term = (kind, inverse, text if case_sensitive else lower(text), case_sensitive, normalize(text) != text)
+            lowered = lower(text)
+            accented = normalize(lowered) != lowered
+            pattern = text if case_sensitive else lowered
+            # As in fzf, a term without accents is folded too, which only changes one like "İ".
+            term = (kind, inverse, pattern if accented else normalize(pattern), case_sensitive, accented)
             if joining:
                 current.append(term)
             else:

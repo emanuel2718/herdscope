@@ -9,6 +9,15 @@ import unittest
 from herdscope import fuzzy
 
 
+def fzf(query, texts):
+    """What the fzf binary ranks for `query`, whatever options this machine sets for it."""
+    env = {**os.environ, "FZF_DEFAULT_OPTS": "", "FZF_DEFAULT_OPTS_FILE": ""}
+    found = subprocess.run(
+        ["fzf", "--filter", query, "--tiebreak=index"], input="\n".join(texts), text=True, capture_output=True, env=env
+    )
+    return found.stdout.splitlines()
+
+
 class FuzzyTests(unittest.TestCase):
     TEXTS = [
         "Replacing Vue’s TypeScript 6 compatib… rana:4 opencode idle ~/git/work/rana",
@@ -21,6 +30,18 @@ class FuzzyTests(unittest.TestCase):
         "Vue-router setup review rana:3 claude done",
         "Résumé café naïve",
         "cafe resume naive",
+        # Punctuation that starts a word scores a boundary bonus, as letters do.
+        "a-b",
+        "x -b",
+        "foo_test",
+        "foo _test",
+        "a.vue",
+        "a .vue",
+        # A whole word beside an underscore ranks below one beside other punctuation.
+        "x_foo_y",
+        "x-foo-y",
+        "ab__ab",
+        "zz ab",
     ]
 
     @unittest.skipUnless(shutil.which("fzf"), "fzf is not installed")
@@ -58,17 +79,27 @@ class FuzzyTests(unittest.TestCase):
             "é",
             "ï",
             "!café",
+            "-",
+            "-b",
+            "_test",
+            ".vue",
+            "'foo'",
+            "'ab' ab",
+            "'ab' | foo",
             "^Rés",
         ]
         for query in queries:
-            expected = subprocess.run(
-                ["fzf", "--filter", query, "--tiebreak=index"],
-                input="\n".join(self.TEXTS),
-                text=True,
-                capture_output=True,
-                env={**os.environ, "FZF_DEFAULT_OPTS": ""},
-            )
-            self.assertEqual(fuzzy.rank(self.TEXTS, query), expected.stdout.splitlines(), query)
+            self.assertEqual(fuzzy.rank(self.TEXTS, query), fzf(query, self.TEXTS), query)
+
+    @unittest.skipUnless(shutil.which("fzf"), "fzf is not installed")
+    def test_accents_fold_as_in_the_fzf_binary(self):
+        # Every character of the scripts fzf folds, looked for by each plain letter and digit.
+        blocks = [(0xC0, 0x2B0), (0x363, 0x370), (0x1D00, 0x1D80), (0x1E00, 0x1F00), (0x2070, 0x20A0), (0x2184, 0x2185)]
+        codes = [*(code for start, end in blocks for code in range(start, end)), *range(0xFF01, 0xFF66)]
+        self.assertTrue({ord(char) for chars in fuzzy.FOLDS.values() for char in chars} <= set(codes))
+        texts = [f"x{chr(code)}" for code in codes]  # After a letter, so a combining one has a base.
+        for query in [*"abcdefghijklmnopqrstuvwxyz0123456789", "A", "O", "Ab", "İ", "'İ", "lodz", "!o"]:
+            self.assertEqual(fuzzy.rank(texts, query), fzf(query, texts), query)
 
     def test_ranking_scores_equal_the_full_match(self):
         # Ranking scores every candidate without filling fzf's score matrix; it must agree with
