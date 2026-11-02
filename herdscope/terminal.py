@@ -4,6 +4,7 @@ import codecs
 import os
 import re
 import select
+import signal
 import sys
 import termios
 import threading
@@ -425,6 +426,13 @@ class Terminal(Canvas):
         except BaseException:
             termios.tcsetattr(self.input, termios.TCSADRAIN, self.saved)
             raise
+        self.resizes = None
+        if threading.current_thread() is threading.main_thread():  # Signals only reach that one.
+            # A resize ends the wait for input, so the next frame fits at once rather than on the
+            # loop's next tick. The signal module writes to the waker itself, from C, so the
+            # handler needs to do nothing, and a full pipe means a wake-up is pending anyway.
+            handler = signal.signal(signal.SIGWINCH, lambda *_: None)
+            self.resizes = (handler, signal.set_wakeup_fd(self.waker[1], warn_on_full_buffer=False))
         return self
 
     def colors(self, timeout=0.3):
@@ -447,6 +455,10 @@ class Terminal(Canvas):
             self.write("\x1b[0m\x1b[?1006l\x1b[?1000l\x1b[?7h\x1b[?2004l\x1b[0 q\x1b[?25h\x1b[?1049l")
         finally:
             termios.tcsetattr(self.input, termios.TCSADRAIN, self.saved)
+            if self.resizes:
+                handler, wakeup = self.resizes
+                signal.set_wakeup_fd(wakeup)
+                signal.signal(signal.SIGWINCH, signal.SIG_DFL if handler is None else handler)
             with self.waking:
                 for fd in self.waker:
                     os.close(fd)

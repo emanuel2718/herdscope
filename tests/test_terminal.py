@@ -2,6 +2,7 @@
 
 import os
 import pty
+import signal
 import termios
 import threading
 import time
@@ -122,6 +123,31 @@ class TerminalTests(unittest.TestCase):
         threading.Timer(0.05, screen.wake).start()
         self.assertIsNone(screen.event(5))
         self.assertLess(time.monotonic() - started, 1, "wake() ends a long wait")
+
+    def test_a_resize_ends_the_wait_and_the_next_frame_fits(self):
+        master, slave = pty.openpty()
+        self.addCleanup(os.close, master)
+        stream = os.fdopen(slave, "r+b", buffering=0)
+        self.addCleanup(stream.close)
+        termios.tcsetwinsize(slave, (3, 20))
+        before = signal.getsignal(signal.SIGWINCH)
+
+        def drain():  # Leaving the terminal waits for its output to be read.
+            try:
+                while os.read(master, 65536):
+                    pass
+            except OSError:
+                pass
+
+        threading.Thread(target=drain, daemon=True).start()
+        with Terminal(stream, stream) as screen:
+            termios.tcsetwinsize(slave, (5, 30))
+            started = time.monotonic()
+            threading.Timer(0.05, os.kill, (os.getpid(), signal.SIGWINCH)).start()
+            self.assertIsNone(screen.event(5))
+            self.assertLess(time.monotonic() - started, 1, "a resize ends a long wait")
+            self.assertEqual(screen.getmaxyx(), (5, 30))
+        self.assertEqual(signal.getsignal(signal.SIGWINCH), before, "the old handler is back")
 
     def test_keys_typed_before_the_popup_starts_are_kept(self):
         master, slave = pty.openpty()
