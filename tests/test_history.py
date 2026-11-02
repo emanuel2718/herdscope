@@ -21,6 +21,17 @@ class HistoryTests(StateTestCase):
             self.assertEqual(db.execute("SELECT weight FROM visits").fetchone()[0], 1.5)
         self.assertEqual(history.visits()["pane"][1], 100 + history.HALF_LIFE)
 
+    def test_what_herdscope_stores_only_its_user_can_read(self):
+        herdr.STATE.chmod(0o755)  # As an earlier version left it.
+        history.record("key", 1)
+        inventory.save_machines({"m": {"at": 1, "entries": []}})
+        self.assertEqual(herdr.STATE.stat().st_mode & 0o777, 0o700)
+        fresh = herdr.STATE / "fresh"  # The status hook may be the first to write anything.
+        event = json.dumps({"pane_id": "w1:p0", "agent_status": "idle"}, separators=(",", ":"))
+        env = {**os.environ, "HERDR_PLUGIN_STATE_DIR": str(fresh), "HERDR_PLUGIN_EVENT_JSON": event}
+        subprocess.run(["sh", "scripts/record-status.sh"], check=True, cwd=ROOT, env=env)
+        self.assertEqual(fresh.stat().st_mode & 0o777, 0o700)
+
     def test_old_history_is_forgotten(self):
         history.record("old", now=100)
         history.record("new", now=100 + history.FORGET + 1)

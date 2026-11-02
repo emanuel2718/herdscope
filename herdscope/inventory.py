@@ -212,10 +212,10 @@ def load_machines():
 
 
 def save_machines(machines):
-    herdr.STATE.mkdir(parents=True, exist_ok=True)
-    temporary = herdr.STATE / f"machines.json.{os.getpid()}"
+    folder = herdr.state()
+    temporary = folder / f"machines.json.{os.getpid()}"
     temporary.write_text(json.dumps(machines, separators=(",", ":")))
-    os.replace(temporary, herdr.STATE / "machines.json")  # Another picker may be reading it.
+    os.replace(temporary, folder / "machines.json")  # Another picker may be reading it.
 
 
 # The live inventory --------------------------------------------------------------------------

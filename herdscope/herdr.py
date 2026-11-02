@@ -16,6 +16,18 @@ STATE = Path(
     or Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "herdr/plugins" / PLUGIN
 )
 
+
+def state():
+    """The plugin's state folder, made if needed and kept private: it records which panes you
+    visit, and what agents on other machines are working on."""
+    STATE.mkdir(parents=True, exist_ok=True)
+    try:
+        STATE.chmod(0o700)
+    except OSError:
+        pass  # Not ours to change; what's in it still works.
+    return STATE
+
+
 # Failures worth a message rather than a traceback.
 ERRORS = (OSError, ValueError, KeyError, RuntimeError)
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)")

@@ -37,8 +37,7 @@ def local_scope():
 
 @contextmanager
 def database():
-    herdr.STATE.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(herdr.STATE / "history.sqlite3", timeout=5)
+    db = sqlite3.connect(herdr.state() / "history.sqlite3", timeout=5)
     try:
         with db:
             db.execute("CREATE TABLE IF NOT EXISTS visits (key TEXT PRIMARY KEY, weight REAL, last REAL)")
@@ -173,6 +172,7 @@ def record_visit():
         if now - marker.stat().st_mtime < PRUNE_EVERY:
             return
     except OSError:
+        herdr.state()
         marker.parent.mkdir(parents=True, exist_ok=True)
     marker.touch()
     prune(herdr.rpc("session.snapshot")["snapshot"], now)

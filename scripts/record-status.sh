@@ -31,5 +31,6 @@ old=
 # shellcheck disable=SC3013
 [ "$old" = "$status" ] && { [ ! -e "$socket" ] || [ "$file" -nt "$socket" ]; } && exit 0
 
+umask 077 # What agents are doing is this user's business alone.
 [ -d "$dir" ] || mkdir -p "$dir"
 printf '%s\n' "$status" > "$file"
