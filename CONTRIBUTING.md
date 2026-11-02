@@ -80,3 +80,5 @@ These are what keep Herdscope fast and dependable. Changes should keep them true
 2. Set the same `version` in `herdr-plugin.toml`. A test checks the two agree.
 3. Commit, tag `vX.Y.Z`, and push the tag. Herdr's marketplace picks up the default branch
    within half an hour; `herdr plugin update` brings it to installed copies.
+4. Publish the GitHub release, with that version's changelog section as its notes:
+   `gh release create vX.Y.Z --verify-tag --title "Herdscope X.Y.Z" --notes-file notes.md`.
