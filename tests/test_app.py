@@ -7,12 +7,16 @@ import select
 import signal
 import tempfile
 import termios
+import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
-from herdscope import app, herdr, inventory
-from herdscope.terminal import Style
+from herdscope import app, herdr, inventory, render, theme
+from herdscope.terminal import Canvas, Style
+from herdscope.view import View
 from tests.support import PREVIEW, snapshot
 
 
@@ -167,3 +171,91 @@ class PreviewerTests(unittest.TestCase):
                 while time.monotonic() < deadline and (previewer.get("pane") or (0, 0, 0))[2] < lines:
                     time.sleep(0.01)
         self.assertEqual(previewer.get("pane")[2], 40, "so the preview knows its history ends there")
+
+
+class Screen(Canvas):
+    """A terminal stand-in that hands out scripted events, for driving the loop directly."""
+
+    def __init__(self, events, idle=None):
+        super().__init__(24, 120)
+        self.events, self.idle = list(events), idle or (lambda: None)
+        self.woken = threading.Event()
+
+    def refresh(self):
+        pass
+
+    def wake(self):
+        self.woken.set()
+
+    def event(self, timeout):
+        if self.events:
+            return self.events.pop(0)
+        self.idle()
+        self.woken.wait(min(timeout, 2))
+        self.woken.clear()
+        return None
+
+
+class RemoteFocusTests(unittest.TestCase):
+    """Focusing a pane on another machine takes seconds, so the popup must stay live meanwhile."""
+
+    def run_loop(self, focus, events, idle=None):
+        remote = inventory.entries(snapshot(), {"id": "gpu", "label": "gpu-box"})
+        panes = SimpleNamespace(current=lambda: (1, remote), poke=lambda: None, stop=threading.Event())
+        screen = Screen(events, idle)
+        palette = render.Palette(theme.load({"theme": {"name": "catppuccin"}}))
+        previewer = SimpleNamespace(want=lambda *a: None, get=lambda key: None, idle=lambda: None, waiting=lambda: 0)
+        with patch.object(inventory, "focus", focus):
+            app.loop(panes, screen, palette, View(), previewer, [])
+        return screen, panes
+
+    def test_the_list_stays_live_and_a_late_release_keeps_the_notice_up(self):
+        gate, calls, handled = threading.Event(), [], []
+
+        def focus(entry, stop):
+            calls.append((entry["pane_id"], stop))
+            gate.wait(5)
+
+        def idle():  # The loop waits for input while the focus is still under way.
+            if not handled:
+                handled.append(True)
+                screen.events += [("key", "down"), ("key", "enter")]  # A second Enter starts nothing.
+            elif not gate.is_set():
+                gate.set()  # Both were handled before the focus finished.
+            elif "Focused" in screen.text():
+                screen.events += [("mouse", (0, 5, 5, False)), ("key", "x")]
+
+        screen = None
+        original = Screen.__init__
+
+        def remember(self, *args, **kwargs):
+            nonlocal screen
+            original(self, *args, **kwargs)
+            screen = self
+
+        with patch.object(Screen, "__init__", remember):
+            screen, panes = self.run_loop(focus, [("key", "enter")], idle)
+        self.assertEqual(len(calls), 1)
+        self.assertIs(calls[0][1], panes.stop, "quitting cancels it")
+        self.assertIn("Select gpu-box in Herdr's sidebar", screen.text())
+        self.assertEqual(screen.events, [], "the release didn't close the notice; the key did")
+
+    def test_a_failed_focus_says_why_and_stays_open(self):
+        def focus(entry, stop):
+            raise RuntimeError("machine unreachable")
+
+        seen = []
+
+        def idle():
+            seen.append(screen.text())
+            if any("machine unreachable" in text for text in seen):
+                screen.events.append(("key", "esc"))
+
+        screen = Screen([("key", "enter")], idle)
+        remote = inventory.entries(snapshot(), {"id": "gpu", "label": "gpu-box"})
+        panes = SimpleNamespace(current=lambda: (1, remote), poke=lambda: None, stop=threading.Event())
+        palette = render.Palette(theme.load({"theme": {"name": "catppuccin"}}))
+        previewer = SimpleNamespace(want=lambda *a: None, get=lambda key: None, idle=lambda: None, waiting=lambda: 0)
+        with patch.object(inventory, "focus", focus):
+            app.loop(panes, screen, palette, View(), previewer, [])
+        self.assertTrue(any("machine unreachable" in text for text in seen))

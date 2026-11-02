@@ -144,23 +144,25 @@ def rank(entry, scores):
 # Acting on entries -------------------------------------------------------------------------
 
 
-def validate(entry):
-    """Raise unless the entry's pane still runs the terminal it listed."""
+def validate(entry, stop=None):
+    """Raise unless the entry's pane still runs the terminal it listed; `stop` cancels a remote check."""
     if entry.get("error"):
         raise RuntimeError(entry["error"])
     if entry["machine_id"]:
         # Keep the same explicit machine selector for validation and mutation.
-        current = herdr.cli(["--machine", entry["machine_id"], "agent", "get", entry["pane_id"]])["agent"]
+        current = herdr.cli(["--machine", entry["machine_id"], "agent", "get", entry["pane_id"]], stop=stop)["agent"]
     else:
         current = herdr.rpc("pane.get", {"pane_id": entry["pane_id"]})["pane"]
     if entry.get("terminal_id") and current.get("terminal_id") != entry["terminal_id"]:
         raise RuntimeError("That pane was replaced since the list loaded; pick it again")
 
 
-def focus(entry):
-    validate(entry)
+def focus(entry, stop=None):
+    """Focus the entry's pane. Another machine's takes seconds, so the UI runs this off its thread,
+    and `stop` cancels it if the popup closes first."""
+    validate(entry, stop)
     if entry["machine_id"]:
-        herdr.cli(["--machine", entry["machine_id"], "agent", "focus", entry["pane_id"]])
+        herdr.cli(["--machine", entry["machine_id"], "agent", "focus", entry["pane_id"]], stop=stop)
     else:
         herdr.rpc("pane.focus", {"pane_id": entry["pane_id"]})
     with suppress(sqlite3.Error):  # Ranking history is a nicety; the focus already happened.

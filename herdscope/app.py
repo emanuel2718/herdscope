@@ -126,7 +126,16 @@ def run(panes):
 def loop(panes, screen, palette, view, previewer, catalog):
     """Draw, wait for input and act, until the popup should close."""
     warming = None
+    switching = None  # A focus on another machine under way: (entry, label, outcome).
     while True:
+        if switching and switching[2]:
+            entry, label, (error,) = switching
+            switching = None
+            if error is None:
+                remote_focused(screen, palette, label, entry["machine"])
+                return
+            view.say(herdr.clean(error), "red", 5)
+            panes.poke()
         now = time.monotonic()
         version, entries = panes.current()
         entries = entries + catalog
@@ -174,15 +183,38 @@ def loop(panes, screen, palette, view, previewer, catalog):
             if entry["kind"] == "error":
                 view.say(entry["error"], "red")
                 continue
+            if entry.get("machine_id"):
+                # It takes a herdr process and an SSH round trip or two, so the list stays live
+                # meanwhile, and quitting cancels it.
+                if not switching:
+                    label = view.current().fields["label"]
+                    view.say(f"Switching to {label} on {entry['machine']}…", seconds=15)
+                    outcome = in_background(lambda entry=entry: inventory.focus(entry, panes.stop), screen.wake)
+                    switching = (entry, label, outcome)
+                continue
             try:
                 inventory.focus(entry)
             except herdr.ERRORS as error:
                 view.say(herdr.clean(error), "red", 5)
                 panes.poke()
                 continue
-            if entry.get("machine_id"):
-                remote_focused(screen, palette, view.current().fields["label"], entry["machine"])
             return
+
+
+def in_background(work, done):
+    """Run `work` on a thread of its own. The list returned gets its error, or None, then `done` runs."""
+    outcome = []
+
+    def run():
+        try:
+            work()
+            outcome.append(None)
+        except Exception as error:  # Reported, not raised: the UI thread decides what to show.
+            outcome.append(error)
+        done()
+
+    threading.Thread(target=run, daemon=True).start()
+    return outcome
 
 
 def wait(view, now):
@@ -211,5 +243,8 @@ def remote_focused(screen, palette, label, machine):
     )
     screen.refresh()
     with suppress(EOFError):
-        while not screen.event(1):
-            pass
+        while True:
+            event = screen.event(1)
+            # Not the release of the click that chose the pane, which can come after.
+            if event and not (event[0] == "mouse" and not event[1][3]):
+                return
