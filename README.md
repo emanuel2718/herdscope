@@ -133,6 +133,8 @@ agents show as Herdscope last saw them, with their status dimmed.
 
 Each machine refreshes every eight seconds, and machines whose agents haven't changed are asked
 less often. Past 80 machines, refreshes spread out to stay around ten requests a second.
+Unreachable machines are retried a few at a time, so they never take the connections the others
+need, and next time they wait until the rest have answered.
 
 You can preview and focus remote agents, but not remote terminals, and remote panes can't be
 closed from here. Herdr has no way for a plugin to switch the machine on screen, so after you

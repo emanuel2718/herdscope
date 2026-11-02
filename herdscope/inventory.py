@@ -30,6 +30,9 @@ MACHINE_RATE = 10
 # A machine whose panes didn't change waits twice as long next time, up to this many intervals,
 # as does one that can't be reached, which holds a worker until it times out.
 MACHINE_BACKOFF = 4
+# Of the workers, how many may retry machines whose last attempt failed. An offline machine holds
+# one until it times out, so the rest stay free for the machines that answer.
+MACHINE_RETRIES = 4
 MACHINE_CACHE_AGE = 86400  # Last time's panes show while a machine loads, if no older than this.
 STATUS_ORDER = {"blocked": 0, "working": 1, "done": 2, "idle": 3, "unknown": 4}
 SECTION = {"agent": 0, "terminal": 1, "error": 2}
@@ -206,7 +209,8 @@ def read(entry, lines, stop=None):
 
 
 def load_machines():
-    """{machine: {"at": when, "entries": panes}} as the picker last saw them."""
+    """{machine: {"at": when, "entries": panes, "failed": when}} as the picker last saw them;
+    "failed" is there if it couldn't be reached since."""
     try:
         return json.loads((herdr.STATE / "machines.json").read_text())
     except (OSError, ValueError):
@@ -231,8 +235,11 @@ class Inventory:
         self.poked = threading.Event()
         self.lock = threading.Lock()
         self.due = threading.Condition()  # Guards the machines' schedule.
-        self.schedule = []
+        self.schedule = []  # Machines that answered, or haven't been asked yet: (when, order, wait, machine).
+        self.retries = []  # Those whose last attempt failed, the same way.
+        self.retrying = 0  # Workers busy retrying one.
         self.machines = {}  # Each machine's latest panes, kept for the next time the picker opens.
+        self.failed = {}  # When each machine failed, while it fails, kept for next time too.
         self.sources = {}
         self.workers = []
         self.version = 0
@@ -329,10 +336,14 @@ class Inventory:
             return
         # Until a machine answers, show its panes as the picker last saw them, dimmed, so hundreds
         # of machines appear at once. Their status times carry over while the status holds.
-        cached, now = load_machines(), time.time()
+        cached, now, first = load_machines(), time.time(), {}
         for machine in machines:
             source, last = ("machine", machine["id"]), cached.get(machine["id"])
-            if last and now - last["at"] < MACHINE_CACHE_AGE:
+            # Ask those seen lately first, then new ones, and leave those that failed last time to
+            # the retries, so they don't hold up the rest.
+            fresh = last and now - last.get("at", 0) < MACHINE_CACHE_AGE
+            first[machine["id"]] = 2 if last and last.get("failed", 0) > last.get("at", 0) else 0 if fresh else 1
+            if fresh:
                 self.machines[machine["id"]] = last
                 for entry in last["entries"]:
                     if entry.get("since"):
@@ -341,39 +352,62 @@ class Inventory:
             else:
                 self.publish(source, [error_entry(machine["label"], "Connecting…", machine["id"], True)])
         interval = max(MACHINE_INTERVAL, len(machines) / MACHINE_RATE)
+        machines.sort(key=lambda machine: first[machine["id"]])
         with self.due:
-            self.schedule = [(0, order, interval, machine) for order, machine in enumerate(machines)]
+            for order, machine in enumerate(machines):
+                failing = first[machine["id"]] == 2
+                if failing:
+                    self.failed[machine["id"]] = cached[machine["id"]]["failed"]
+                (self.retries if failing else self.schedule).append((0, order, interval, machine))
         for _ in range(min(MACHINE_WORKERS, len(machines))):
             self.start(self.poll, interval)
 
     def poll(self, interval):
-        """Refresh machines as they fall due, earliest first, backing off those that are idle."""
+        """Refresh machines as they fall due, earliest first, backing off those that are idle.
+
+        Machines that failed last time are retried by at most MACHINE_RETRIES workers at once,
+        so however many are offline, the rest of the workers keep the reachable ones current.
+        """
         import random  # noqa: PLC0415 - only machines need it, so a start without them skips it.
 
         while True:
             with self.due:
-                while not self.stop.is_set() and (not self.schedule or self.schedule[0][0] > time.monotonic()):
-                    self.due.wait(self.schedule[0][0] - time.monotonic() if self.schedule else None)
-                if self.stop.is_set():
-                    return
-                _, order, wait, machine = heapq.heappop(self.schedule)
+                while True:
+                    if self.stop.is_set():
+                        return
+                    now, may_retry = time.monotonic(), self.retrying < MACHINE_RETRIES
+                    if self.schedule and self.schedule[0][0] <= now:
+                        _, order, wait, machine = heapq.heappop(self.schedule)
+                        retry = False
+                        break
+                    if may_retry and self.retries and self.retries[0][0] <= now:
+                        _, order, wait, machine = heapq.heappop(self.retries)
+                        retry, self.retrying = True, self.retrying + 1
+                        break
+                    due = [queue[0][0] for queue in (self.schedule, self.retries if may_retry else ()) if queue]
+                    self.due.wait(min(due) - now if due else None)
+            failed = True
             try:
                 snapshot = herdr.cli(["--machine", machine["id"], "api", "snapshot"], stop=self.stop)["snapshot"]
                 values = history.stamp(entries(snapshot, machine), self.since, self.seen)
                 last = self.machines.get(machine["id"], {}).get("entries")
                 wait = min(wait * 2, interval * MACHINE_BACKOFF) if values == last else interval
                 self.machines[machine["id"]] = {"at": time.time(), "entries": values}
+                self.failed.pop(machine["id"], None)
                 self.publish(("machine", machine["id"]), values)
+                failed = False
             except Exception as error:  # A dead worker would leave its machines stale silently.
                 wait = interval * MACHINE_BACKOFF
+                self.failed[machine["id"]] = time.time()
                 self.publish(("machine", machine["id"]), [error_entry(machine["label"], str(error), machine["id"])])
             finally:
                 with self.due:
+                    self.retrying -= retry
                     # A little jitter, so machines first asked together drift apart instead of
                     # falling due together every round.
                     when = time.monotonic() + wait * random.uniform(0.75, 1.25)
-                    heapq.heappush(self.schedule, (when, order, wait, machine))
-                    self.due.notify()
+                    heapq.heappush(self.retries if failed else self.schedule, (when, order, wait, machine))
+                    self.due.notify_all()  # A retry may have finished, which frees a worker for the next.
 
     def start(self, target, *args):
         thread = threading.Thread(target=target, args=args, daemon=True)
@@ -392,7 +426,11 @@ class Inventory:
             self.due.notify_all()
         for worker in list(self.workers):
             worker.join(timeout=1)
-        if self.machines:
-            # On failure, machines show "Connecting…" next time until they answer, as on the first.
+        if self.machines or self.failed:
+            # A machine that failed shows "Connecting…" next time until it answers, as on the
+            # first, and starts among the retries.
+            saved = dict(self.machines)
+            for machine, when in list(self.failed.items()):
+                saved[machine] = {**saved.get(machine, {"at": 0, "entries": []}), "failed": when}
             with suppress(OSError):
-                save_machines(self.machines)
+                save_machines(saved)

@@ -94,6 +94,57 @@ class InventoryTests(StateTestCase):
         self.assertLessEqual(peak, inventory.MACHINE_WORKERS)
         self.assertEqual(len(panes.workers), 2 + inventory.MACHINE_WORKERS, "not a thread per machine")
 
+    def test_offline_machines_leave_workers_for_the_ones_that_answer(self):
+        offline = [{"id": f"off{i}", "label": f"Off {i}"} for i in range(12)]
+        online = [{"id": "on0", "label": "On 0"}, {"id": "on1", "label": "On 1"}]
+        polls, lock, busy, peak = {"on0": 0, "on1": 0}, threading.Lock(), [0], [0]
+
+        def cli(args, stop=None, **kwargs):
+            if args[0] == "machine":
+                return offline + online  # The offline ones first, the worst order.
+            machine = args[1]
+            if machine.startswith("off"):
+                with lock:
+                    busy[0] += 1
+                    peak[0] = max(peak[0], busy[0])
+                time.sleep(0.3)  # Each holds a worker until it times out.
+                with lock:
+                    busy[0] -= 1
+                raise RuntimeError("unreachable")
+            with lock:
+                polls[machine] += 1
+            return {"snapshot": snapshot()}
+
+        def answered(panes):
+            return {e["machine_id"] for e in panes.current()[1] if e["kind"] == "agent"} >= {"on0", "on1"}
+
+        timing = {"MACHINE_WORKERS": 4, "MACHINE_RETRIES": 1, "MACHINE_INTERVAL": 0.05, "MACHINE_RATE": 10000}
+        with (
+            patch.multiple(inventory, **timing),
+            patch.object(herdr, "rpc", return_value={"snapshot": snapshot()}),
+            patch.object(herdr, "cli", cli),
+        ):
+            with inventory.Inventory() as panes:
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and not answered(panes):
+                    time.sleep(0.01)
+                time.sleep(0.6)  # Every offline machine has failed once by now.
+                with lock:
+                    before, peak[0] = dict(polls), busy[0]
+                time.sleep(1)
+                with lock:
+                    during = {machine: polls[machine] - before[machine] for machine in polls}
+            self.assertLessEqual(peak[0], 1, "one worker at a time retries the offline machines")
+            # Unchanged, each is asked at least every 4 intervals: 5 times a second. Starved of
+            # workers, as before, hardly at all.
+            self.assertTrue(all(count >= 3 for count in during.values()), during)
+
+            with inventory.Inventory() as panes:  # Next time, last time's failures wait their turn.
+                started = time.monotonic()
+                while time.monotonic() - started < 5 and not answered(panes):
+                    time.sleep(0.01)
+                self.assertLess(time.monotonic() - started, 0.25, "the online machines answer first")
+
     def test_machines_show_last_time_s_panes_until_they_answer(self):
         machines, answer = [{"id": "m", "label": "Box"}], threading.Event()
 
