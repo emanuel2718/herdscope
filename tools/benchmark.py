@@ -95,7 +95,7 @@ def against_fzf(count):
     """
     items = [Item(entry) for entry in inventory.entries(snapshot(count, random.Random(1)))]
     lines = "\n".join(item.text for item in items)
-    env = {**os.environ, "FZF_DEFAULT_OPTS": ""}
+    env = {**os.environ, "FZF_DEFAULT_OPTS": "", "FZF_DEFAULT_OPTS_FILE": ""}  # Whatever this machine sets.
 
     def fzf(query, text):
         began = time.perf_counter()
