@@ -7,8 +7,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from herdscope import render, theme
+from herdscope import commands, render, theme
 from herdscope.terminal import Style
+from tests.support import snapshot
 
 
 class ThemeTests(unittest.TestCase):
@@ -47,6 +48,21 @@ class ThemeTests(unittest.TestCase):
         self.assertEqual(theme.load({"ui": {"accent": "cyan"}}, ("#ffffff", "#000000"))["accent"], 6)
         self.assertEqual(theme.load({"theme": {"name": "nord"}}, ("#ffffff", "#000000"))["panel_bg"], "#2e3440")
         self.assertEqual(theme.load({"theme": {"name": "terminal"}}, ("#ffffff", "#000000"))["panel_bg"], "#121212")
+
+    def test_settings_of_the_wrong_type_count_as_unset(self):
+        default = theme.load({})
+        for settings in (
+            {"theme": "dracula"},
+            {"theme": {"name": ["dracula"]}},
+            {"theme": {"custom": "x"}},
+            {"theme": {"auto_switch": True, "dark_name": 5, "light_name": None}},
+            {"ui": "x"},
+            {"keys": "x"},
+            {"keys": {"new_tab": 5, "prefix": ["ctrl+b"], "split_right": [3]}},
+        ):
+            tokens = theme.load(settings, ("#cdd6f4", "#1e1e2e"))
+            self.assertEqual(tokens["accent"], default["accent"], settings)
+            self.assertTrue(commands.catalog(snapshot(), settings), settings)
 
     def test_light_themes_and_auto_switch_follow_the_terminal(self):
         for name in ("one-light", "solarized-light", "kanagawa-lotus", "rose-pine-dawn"):

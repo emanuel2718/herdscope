@@ -6,7 +6,7 @@ started (a popup is never focused itself), its tab and its workspace.
 
 import os
 
-from herdscope import herdr, inventory
+from herdscope import herdr, inventory, theme
 
 # Herdr 0.9.1's default bindings, shown for commands the config leaves unset.
 DEFAULT_KEYS = {
@@ -81,8 +81,8 @@ def chord(binding, prefix=None):
     """A Herdr binding as compact keys: "prefix+shift+n" with prefix "ctrl+s" reads "⌃S ⇧N"."""
     if isinstance(binding, list):
         binding = binding[0] if binding else ""
-    if not binding:
-        return ""
+    if not binding or not isinstance(binding, str):
+        return ""  # Unbound, or not a binding Herdr would accept.
     tokens, steps = binding.split("+"), []
     if tokens[0] == "prefix" and prefix:
         steps.append(chord(prefix).replace(" ", ""))
@@ -155,7 +155,7 @@ def command(name, glyph, title, category, target, binding, aliases, run, about, 
 
 def catalog(snapshot, settings, actions=()):
     """Commands for where the popup was opened from, given the snapshot taken at startup."""
-    keys = {**DEFAULT_KEYS, **settings.get("keys", {})}
+    keys = {**DEFAULT_KEYS, **theme.section(settings.get("keys"))}
 
     def shortcut(name):
         return chord(keys.get(name), keys["prefix"]) if name else ""

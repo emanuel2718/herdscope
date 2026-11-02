@@ -225,6 +225,16 @@ def from_terminal(colors=None):
     return tokens
 
 
+def section(value):
+    """A config table, or an empty one when the config has something else there."""
+    return value if isinstance(value, dict) else {}
+
+
+def name_in(table, key, default):
+    value = table.get(key)
+    return value if isinstance(value, str) else default
+
+
 def load(settings=None, terminal=None):
     """Resolve the token colors plus UI options.
 
@@ -234,15 +244,17 @@ def load(settings=None, terminal=None):
     Herdr draws the popup border in it.
     """
     settings = config() if settings is None else settings
-    theme, ui = settings.get("theme", {}), settings.get("ui", {})
-    name, mode = theme.get("name", "catppuccin"), None
+    # Herdr checks its config's types; this one is read straight from the file, so it can't
+    # count on them: a value of the wrong type counts as unset.
+    theme, ui = section(settings.get("theme")), section(settings.get("ui"))
+    name, mode = name_in(theme, "name", "catppuccin"), None
     if theme.get("auto_switch"):
         mode = "dark" if dark_appearance(terminal) else "light"
-        name = theme.get(f"{mode}_name", "catppuccin" if mode == "dark" else "catppuccin-latte")
+        name = name_in(theme, f"{mode}_name", "catppuccin" if mode == "dark" else "catppuccin-latte")
     tokens = dict(THEMES.get(name, THEMES["catppuccin"]))
     if not theme or name == "terminal":
         tokens.update(from_terminal(terminal))
-    custom = theme.get("custom", {})
+    custom = section(theme.get("custom"))
     layers = [custom] + ([custom[mode]] if mode and isinstance(custom.get(mode), dict) else [])
     for layer in layers:
         tokens.update({key: color(value, tokens[key]) for key, value in layer.items() if key in tokens})
