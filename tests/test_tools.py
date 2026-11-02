@@ -27,12 +27,16 @@ class ToolTests(unittest.TestCase):
         for text in ("Migrate router to typed routes", "gpu-box", "Allow Codex to edit", "Herdscope"):
             self.assertIn(text, html)
 
-    def test_social_preview_shows_every_agent_and_no_preview(self):
+    def test_social_preview_shows_every_agent_and_the_blocked_ones_question(self):
         tokens = social_preview.theme.load({"theme": {"name": "catppuccin"}})
-        html = social_preview.page(social_preview.frame(tokens), tokens)
-        for _, _, _, _, task, *_ in (*screenshot.AGENTS, *screenshot.REMOTE):
-            self.assertIn(task, html)
-        self.assertNotIn("Allow Codex to edit", html)
+        canvas = social_preview.frame(tokens)
+        text = "\n".join("".join(char for char, _ in row) for row in canvas.cells)
+        for *_, task, _, _ in screenshot.AGENTS:
+            self.assertIn(task[:16], text)  # The narrower list may shorten the longest with "…".
+        for line in ("Allow Codex to edit", "3. No, and tell Codex what to do differently esc"):
+            self.assertIn(line, text)
+        self.assertNotIn("Explored", text)  # Only the question, not the README's whole preview.
+        self.assertIn("Herdscope", social_preview.page(canvas, tokens))
 
     @unittest.skipUnless(shutil.which("fzf"), "fzf is not installed")
     def test_benchmark_ranks_panes_exactly_as_fzf_does(self):

@@ -60,8 +60,8 @@ def diff(number, sign, code):
 
 
 PREVIEW = "\n".join([
-    f"{BOLD}• I'll replace the route array with a typed route tree, so links and{RESET}",
-    f"{BOLD}  params are checked when the app builds.{RESET}",
+    f"{BOLD}• I'll replace the route array with a typed route tree, so links{RESET}",
+    f"{BOLD}  and params are checked when the app builds.{RESET}",
     "",
     f"{BOLD}• Explored{RESET}",
     f"  {DIM}└{RESET} Read router.ts, routes/projects.tsx, routes/settings.tsx",
@@ -122,12 +122,13 @@ def entries():
     return local, sorted(found, key=lambda entry: inventory.rank(entry, {}))
 
 
-def frame(tokens):
+def frame(tokens, rows=ROWS, columns=COLUMNS, preview=PREVIEW):
+    """The demo session drawn on a `rows` by `columns` canvas, the selected agent's pane showing `preview`."""
     local, panes = entries()
     with patch.object(commands, "installed", side_effect=lambda name: name in ("claude", "codex", "opencode")):
         listed = panes + commands.catalog(local, {})
-    canvas, palette, view = Canvas(ROWS, COLUMNS), render.Palette(tokens), View()
-    with app.Previewer(Style(tokens["text"], tokens["panel_bg"]), lambda entry, lines: PREVIEW) as previewer:
+    canvas, palette, view = Canvas(rows, columns), render.Palette(tokens), View()
+    with app.Previewer(Style(tokens["text"], tokens["panel_bg"]), lambda entry, lines: preview) as previewer:
         for _ in range(50):
             render.draw(canvas, palette, view, listed, view.results(1, listed), 0.35, previewer, wall=NOW)
             if previewer.get(view.selected):
@@ -146,18 +147,25 @@ def page(canvas, tokens):
     text, background = tokens["text"], tokens["sidebar_bg"]
     rows = []
     for row in canvas.cells:
-        runs, current = [], None
-        for char, style in row:
+        # Each run: its style, its text, and the cells it must fill, or None when it fills them by itself.
+        # A glyph from a fallback font (the working spinner's braille) can be wider than a cell, and the
+        # browser would push the rest of its line right, so each non-ASCII glyph gets cells of its own.
+        runs = []
+        for n, (char, style) in enumerate(row):
             if not char:
                 continue  # The second cell of a wide glyph.
-            if style != current:
-                runs.append([style, []])
-                current = style
-            runs[-1][1].append(char)
+            if not char.isascii():
+                wide = n + 1 < len(row) and not row[n + 1][0]
+                runs.append([style, [char], 1 + wide])
+            elif runs and runs[-1][0] == style and runs[-1][2] is None:
+                runs[-1][1].append(char)
+            else:
+                runs.append([style, [char], None])
         spans = []
-        for style, chars in runs:
+        for style, chars, cells in runs:
             css = f"color:{color(style.fg, text)};background:{color(style.bg, background)}"
             css += ";font-weight:700" * style.bold + ";opacity:.6" * style.dim + ";font-style:italic" * style.italic
+            css += f";width:{cells}ch" * bool(cells)
             spans.append(f'<span style="{css}">{html.escape("".join(chars))}</span>')
         rows.append(f"<div>{''.join(spans)}</div>")
     accent = tokens["accent"]

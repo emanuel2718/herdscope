@@ -1,7 +1,8 @@
 """Render assets/social-preview.png: the 1280x640 image GitHub shows when the repo is linked.
 
-The name and tagline above the real picker's agent list, drawn with screenshot.py's demo data,
-large enough to read as a link-preview thumbnail. Needs what screenshot.py needs.
+The name and tagline above the real picker, drawn with screenshot.py's demo data: the ranked
+agents, and beside them, the blocked one's question. Only that much, so it still reads as a
+link-preview thumbnail. Needs what screenshot.py needs.
 
     python3 tools/social_preview.py [output.png]
 """
@@ -11,40 +12,45 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import screenshot
-from screenshot import CHROME, NOW, Canvas, Style, View, app, commands, render, theme
+from screenshot import BOLD, CHROME, CYAN, DIM, GREEN, RED, RESET, diff, theme
 
-# Enough rows for the prompt, the tabs and every agent; the terminals below them are cut off.
-ROWS, COLUMNS = 14, 86
+# Enough rows for the prompt, the tabs and every agent, the terminals below them cut off; enough
+# columns for the preview to sit beside the list (100 or more) with its longest line whole.
+ROWS, COLUMNS = 14, 130
 WIDTH, HEIGHT = 1280, 640
+# The README's preview cut to the change and Codex's question: no plan, no files read, two lines of diff.
+PREVIEW = "\n".join([
+    f"{BOLD}• Proposed change{RESET} apps/web/src/router.ts {GREEN}+38{RESET} {RED}-21{RESET}",
+    "",
+    diff(12, "-", "const routes = ["),
+    diff(12, "+", "const routeTree = rootRoute.addChildren(["),
+    "",
+    f"{BOLD}  Allow Codex to edit apps/web/src/router.ts?{RESET}",
+    "",
+    f"{CYAN}› 1. Yes, proceed{RESET}",
+    "  2. Yes, and don't ask again for this file",
+    f"  3. No, and tell Codex what to do differently {DIM}esc{RESET}",
+])  # fmt: skip
 
 
 def frame(tokens):
-    """The picker without its preview: the prompt, the tabs and the ranked list."""
-    local, panes = screenshot.entries()
-    with patch.object(commands, "installed", side_effect=lambda name: name in ("claude", "codex", "opencode")):
-        listed = panes + commands.catalog(local, {})
-    canvas, palette, view = Canvas(ROWS, COLUMNS), render.Palette(tokens), View()
-    view.preview = False
-    with app.Previewer(Style(tokens["text"], tokens["panel_bg"]), lambda entry, lines: "") as previewer:
-        render.draw(canvas, palette, view, listed, view.results(1, listed), 0.35, previewer, wall=NOW)
-    return canvas
+    return screenshot.frame(tokens, ROWS, COLUMNS, PREVIEW)
 
 
 def page(canvas, tokens):
-    """The name and tagline, then the list in Herdr's popup border, on a 1280x640 card."""
+    """The name and tagline, then the picker in Herdr's popup border, on a 1280x640 card."""
     grid = screenshot.page(canvas, tokens)
     style, body = grid.split("</style>", 1)
     return f"""{style}
 html, body {{ width: {WIDTH}px; height: {HEIGHT}px; overflow: hidden; }}
 body {{ padding: 0; box-sizing: border-box; display: flex; flex-direction: column; align-items: center;
-  justify-content: center; gap: 26px; font-size: 18px; line-height: 25px;
+  justify-content: center; gap: 26px; font-size: 14.5px; line-height: 22px;
   background: radial-gradient(ellipse at 50% 0%, #313244 0%, {tokens["panel_bg"]} 55%, #11111b 100%); }}
-.grid div, .grid span {{ height: 25px; }}
+.grid div, .grid span {{ height: 22px; }}
 .popup {{ padding-top: 20px; }}
 .window {{ box-shadow: 0 0 0 1px #ffffff1a, 0 30px 70px #00000099; }}
 header {{ text-align: center; color: {tokens["text"]};
