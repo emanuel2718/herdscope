@@ -91,6 +91,10 @@ class HistoryTests(StateTestCase):
         self.assertEqual(history.visits(), {}, "a status change is not a visit")
         Path(herdr.SOCKET).touch()  # Herdr restarted, so pane IDs may name other panes now.
         self.assertEqual(history.statuses(items), {})
+        hook("blocked")  # The same status as the old file's, but in the restarted server.
+        status, since = history.statuses(items)[key]
+        self.assertEqual(status, "blocked")
+        self.assertGreaterEqual(since, history.started())
 
     def test_time_in_state_comes_from_the_hook_or_what_the_picker_saw(self):
         items = inventory.entries(snapshot())
